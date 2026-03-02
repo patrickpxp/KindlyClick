@@ -6,7 +6,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "harness": "node ../tests/harness.js"
+    "harness": "node ../tests/harness.js",
+    "harness:extension": "node ../tests/extension_harness.js"
   },
   "engines": {
     "node": ">=20"

@@ -1,0 +1,439 @@
+const TARGET_SAMPLE_RATE = 16000;
+const MIC_SELECTION_STORAGE_KEY = "kindlyclick:selectedMicDeviceId";
+
+class MicrophoneStreamer {
+  constructor() {
+    this.mediaStream = null;
+    this.audioContext = null;
+    this.sourceNode = null;
+    this.processorNode = null;
+    this.silentGainNode = null;
+    this.onChunk = null;
+  }
+
+  async start(stream, onChunk) {
+    if (this.processorNode) {
+      return;
+    }
+
+    this.mediaStream = stream;
+    this.onChunk = onChunk;
+
+    const [track] = this.mediaStream.getAudioTracks();
+    if (track && track.applyConstraints) {
+      try {
+        await track.applyConstraints({
+          channelCount: { ideal: 1 },
+          sampleRate: { ideal: TARGET_SAMPLE_RATE },
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        });
+      } catch (error) {
+        // Keep streaming even if preferred constraints are unsupported.
+      }
+    }
+
+    this.audioContext = new AudioContext();
+    await this.audioContext.resume();
+
+    this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
+    this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
+    this.silentGainNode = this.audioContext.createGain();
+    this.silentGainNode.gain.value = 0;
+
+    this.processorNode.onaudioprocess = (event) => {
+      const input = event.inputBuffer.getChannelData(0);
+      const resampled = resampleFloat32Mono(input, this.audioContext.sampleRate, TARGET_SAMPLE_RATE);
+      const pcm16 = floatToPcm16(resampled);
+      const rms = computeRms(resampled);
+
+      if (this.onChunk) {
+        this.onChunk({
+          pcm16Base64: toBase64FromInt16(pcm16),
+          rms
+        });
+      }
+    };
+
+    this.sourceNode.connect(this.processorNode);
+    this.processorNode.connect(this.silentGainNode);
+    this.silentGainNode.connect(this.audioContext.destination);
+  }
+
+  async stop() {
+    if (this.processorNode) {
+      this.processorNode.disconnect();
+      this.processorNode.onaudioprocess = null;
+      this.processorNode = null;
+    }
+
+    if (this.sourceNode) {
+      this.sourceNode.disconnect();
+      this.sourceNode = null;
+    }
+
+    if (this.silentGainNode) {
+      this.silentGainNode.disconnect();
+      this.silentGainNode = null;
+    }
+
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach((track) => track.stop());
+      this.mediaStream = null;
+    }
+
+    if (this.audioContext) {
+      await this.audioContext.close();
+      this.audioContext = null;
+    }
+
+    this.onChunk = null;
+  }
+}
+
+class PcmPlayer {
+  constructor(sampleRate = TARGET_SAMPLE_RATE) {
+    this.sampleRate = sampleRate;
+    this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
+    this.nextStartTime = 0;
+    this.activeSources = new Set();
+  }
+
+  async enqueue(base64Pcm) {
+    if (!base64Pcm) {
+      return;
+    }
+
+    await this.audioContext.resume();
+
+    const pcmBytes = fromBase64(base64Pcm);
+    const sampleCount = Math.floor(pcmBytes.byteLength / 2);
+    const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+
+    const buffer = this.audioContext.createBuffer(1, sampleCount, this.sampleRate);
+    const channelData = buffer.getChannelData(0);
+
+    for (let i = 0; i < sampleCount; i += 1) {
+      channelData[i] = view.getInt16(i * 2, true) / 32768;
+    }
+
+    const source = this.audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.audioContext.destination);
+
+    const startTime = Math.max(this.audioContext.currentTime, this.nextStartTime);
+    source.start(startTime);
+    this.nextStartTime = startTime + buffer.duration;
+
+    this.activeSources.add(source);
+    source.onended = () => {
+      source.disconnect();
+      this.activeSources.delete(source);
+    };
+  }
+
+  clear() {
+    for (const source of this.activeSources) {
+      try {
+        source.stop();
+      } catch (error) {
+        // Ignore sources already ended.
+      }
+      source.disconnect();
+    }
+
+    this.activeSources.clear();
+    this.nextStartTime = this.audioContext.currentTime;
+  }
+}
+
+function resampleFloat32Mono(input, inputSampleRate, targetSampleRate) {
+  if (!Number.isFinite(inputSampleRate) || inputSampleRate <= 0 || input.length === 0) {
+    return input;
+  }
+
+  if (inputSampleRate === targetSampleRate) {
+    return input;
+  }
+
+  const ratio = inputSampleRate / targetSampleRate;
+  const outputLength = Math.max(1, Math.floor(input.length / ratio));
+  const output = new Float32Array(outputLength);
+
+  for (let i = 0; i < outputLength; i += 1) {
+    const sourceIndex = i * ratio;
+    const low = Math.floor(sourceIndex);
+    const high = Math.min(low + 1, input.length - 1);
+    const weight = sourceIndex - low;
+    output[i] = input[low] * (1 - weight) + input[high] * weight;
+  }
+
+  return output;
+}
+
+function floatToPcm16(floatSamples) {
+  const pcm16 = new Int16Array(floatSamples.length);
+
+  for (let i = 0; i < floatSamples.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, floatSamples[i]));
+    pcm16[i] = sample < 0 ? Math.round(sample * 0x8000) : Math.round(sample * 0x7fff);
+  }
+
+  return pcm16;
+}
+
+function computeRms(samples) {
+  if (!samples || samples.length === 0) {
+    return 0;
+  }
+
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 1) {
+    sum += samples[i] * samples[i];
+  }
+
+  return Math.sqrt(sum / samples.length);
+}
+
+function toBase64FromInt16(int16Array) {
+  const bytes = new Uint8Array(int16Array.buffer);
+  let binary = "";
+
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+
+  return btoa(binary);
+}
+
+function fromBase64(base64Value) {
+  const binary = atob(base64Value);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return bytes;
+}
+
+function createUi() {
+  return {
+    wsUrl: document.getElementById("wsUrl"),
+    connectBtn: document.getElementById("connectBtn"),
+    disconnectBtn: document.getElementById("disconnectBtn"),
+    micSelect: document.getElementById("micSelect"),
+    refreshMicBtn: document.getElementById("refreshMicBtn"),
+    requestMicBtn: document.getElementById("requestMicBtn"),
+    startMicBtn: document.getElementById("startMicBtn"),
+    endTurnBtn: document.getElementById("endTurnBtn"),
+    stopMicBtn: document.getElementById("stopMicBtn"),
+    status: document.getElementById("status"),
+    micInfo: document.getElementById("micInfo"),
+    log: document.getElementById("log")
+  };
+}
+
+function appendLog(ui, text) {
+  const ts = new Date().toLocaleTimeString();
+  ui.log.textContent = `[${ts}] ${text}\n${ui.log.textContent}`.split("\n").slice(0, 60).join("\n");
+}
+
+function formatMicInfo(micInfo) {
+  if (!micInfo || micInfo.state === "not_requested") {
+    return "Mic: not requested";
+  }
+
+  const name = micInfo.label || "Unknown microphone";
+  const state = micInfo.state || "unknown";
+  const deviceId = micInfo.deviceId ? micInfo.deviceId : "n/a";
+  const sampleRate = micInfo.sampleRate ? `${micInfo.sampleRate}Hz` : "n/a";
+  const channelCount = micInfo.channelCount ? `${micInfo.channelCount}ch` : "n/a";
+  return `Mic (${state}): ${name} | deviceId=${deviceId} | ${sampleRate} ${channelCount}`;
+}
+
+function renderState(ui, state) {
+  ui.status.textContent = `Status: ${state.status}`;
+  ui.micInfo.textContent = formatMicInfo(state.micInfo);
+  ui.connectBtn.disabled = state.connected || state.connecting;
+  ui.disconnectBtn.disabled = !state.connected;
+  ui.requestMicBtn.disabled = state.micActive || state.micStarting;
+  ui.startMicBtn.disabled =
+    !state.connected || !state.sessionReady || state.micActive || state.micStarting || !state.hasGrantedMicStream;
+  ui.endTurnBtn.disabled = !state.micActive;
+  ui.stopMicBtn.disabled = !state.micActive;
+}
+
+function loadSelectedMicDeviceId() {
+  try {
+    return localStorage.getItem(MIC_SELECTION_STORAGE_KEY) || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function saveSelectedMicDeviceId(deviceId) {
+  try {
+    if (!deviceId) {
+      localStorage.removeItem(MIC_SELECTION_STORAGE_KEY);
+      return;
+    }
+
+    localStorage.setItem(MIC_SELECTION_STORAGE_KEY, deviceId);
+  } catch (error) {
+    // Ignore persistence failures.
+  }
+}
+
+async function listAudioInputDevices() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    return [];
+  }
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((device) => device.kind === "audioinput");
+}
+
+function renderMicOptions(ui, devices, selectedDeviceId) {
+  ui.micSelect.textContent = "";
+
+  const defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = "System Default";
+  ui.micSelect.appendChild(defaultOption);
+
+  devices.forEach((device, index) => {
+    const option = document.createElement("option");
+    option.value = device.deviceId;
+    option.textContent = device.label || `Microphone ${index + 1}`;
+    ui.micSelect.appendChild(option);
+  });
+
+  const selectedExists =
+    !selectedDeviceId || devices.some((device) => device.deviceId === selectedDeviceId);
+  ui.micSelect.value = selectedExists ? selectedDeviceId : "";
+}
+
+(function bootstrap() {
+  const ui = createUi();
+  const micStreamer = new MicrophoneStreamer();
+  const pcmPlayer = new PcmPlayer();
+  let selectedMicDeviceId = loadSelectedMicDeviceId();
+
+  async function refreshMicDevices(logLabel = null) {
+    const devices = await listAudioInputDevices();
+    renderMicOptions(ui, devices, selectedMicDeviceId);
+    selectedMicDeviceId = ui.micSelect.value || "";
+    saveSelectedMicDeviceId(selectedMicDeviceId);
+
+    if (logLabel) {
+      appendLog(
+        ui,
+        `${logLabel}: ${devices.length} microphone${devices.length === 1 ? "" : "s"} found`
+      );
+    }
+  }
+
+  const controller = new window.KindlyClickAudioController.AudioController({
+    socketFactory: (url) => new WebSocket(url),
+    mic: {
+      requestPermission: ({ deviceId } = {}) => {
+        if (deviceId) {
+          return navigator.mediaDevices.getUserMedia({
+            audio: {
+              deviceId: { exact: deviceId }
+            }
+          });
+        }
+
+        return navigator.mediaDevices.getUserMedia({ audio: true });
+      },
+      readPermissionState: async () => {
+        if (!navigator.permissions || !navigator.permissions.query) {
+          return "unknown";
+        }
+
+        try {
+          const permission = await navigator.permissions.query({ name: "microphone" });
+          return permission.state;
+        } catch (error) {
+          return "unknown";
+        }
+      },
+      start: (stream, onChunk) => micStreamer.start(stream, onChunk),
+      stop: () => micStreamer.stop(),
+      releaseStream: (stream) => {
+        if (!stream) {
+          return;
+        }
+
+        stream.getTracks().forEach((track) => track.stop());
+      }
+    },
+    player: {
+      enqueue: (base64Pcm) => pcmPlayer.enqueue(base64Pcm),
+      clear: () => pcmPlayer.clear()
+    },
+    logFn: (text) => appendLog(ui, text),
+    stateFn: (state) => renderState(ui, state),
+    traceFn: () => {
+      // Keep available for future diagnostics; not rendered by default.
+    }
+  });
+
+  ui.connectBtn.addEventListener("click", () => {
+    try {
+      controller.connect(ui.wsUrl.value);
+    } catch (error) {
+      appendLog(ui, `connect error: ${error.message}`);
+    }
+  });
+
+  ui.disconnectBtn.addEventListener("click", () => {
+    controller.disconnect().catch((error) => {
+      appendLog(ui, `disconnect error: ${error.message}`);
+    });
+  });
+
+  ui.micSelect.addEventListener("change", () => {
+    selectedMicDeviceId = ui.micSelect.value || "";
+    saveSelectedMicDeviceId(selectedMicDeviceId);
+    appendLog(ui, selectedMicDeviceId ? `mic selected: ${selectedMicDeviceId}` : "mic selected: System Default");
+  });
+
+  ui.refreshMicBtn.addEventListener("click", () => {
+    refreshMicDevices("mic refresh").catch((error) => {
+      appendLog(ui, `mic refresh error: ${error.message}`);
+    });
+  });
+
+  ui.requestMicBtn.addEventListener("click", () => {
+    controller
+      .requestMicrophonePermission({ deviceId: selectedMicDeviceId || undefined })
+      .then(() => refreshMicDevices())
+      .catch((error) => {
+      appendLog(ui, `mic request error: ${error.name || "Error"}: ${error.message}`);
+    });
+  });
+
+  ui.startMicBtn.addEventListener("click", () => {
+    controller.startMicrophone().catch((error) => {
+      appendLog(ui, `mic start error: ${error.name || "Error"}: ${error.message}`);
+    });
+  });
+
+  ui.endTurnBtn.addEventListener("click", () => {
+    controller.endCurrentUtterance("manual end turn");
+  });
+
+  ui.stopMicBtn.addEventListener("click", () => {
+    controller.stopMicrophone().catch((error) => {
+      appendLog(ui, `mic stop error: ${error.message}`);
+    });
+  });
+
+  refreshMicDevices().catch((error) => {
+    appendLog(ui, `initial mic list error: ${error.message}`);
+  });
+})();

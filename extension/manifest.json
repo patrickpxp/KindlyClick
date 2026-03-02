@@ -1,11 +1,17 @@
 {
   "manifest_version": 3,
   "name": "KindlyClick",
-  "version": "0.1.0",
-  "description": "KindlyClick Senior Navigator extension shell (Milestone 1)",
+  "version": "0.2.0",
+  "description": "KindlyClick Senior Navigator extension audio prototype (Milestone 2)",
   "action": {
     "default_title": "KindlyClick"
   },
-  "permissions": ["storage", "activeTab"],
-  "host_permissions": ["<all_urls>"]
+  "permissions": ["storage", "activeTab", "microphone", "sidePanel"],
+  "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
 }

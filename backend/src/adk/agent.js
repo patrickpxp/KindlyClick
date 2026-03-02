@@ -1,3 +1,5 @@
+const { MockLiveSession } = require("./mockLiveSession");
+
 async function initializeAdkConnection(logger = console) {
   try {
     const adkModule = await import("@google/adk");
@@ -20,6 +22,26 @@ async function initializeAdkConnection(logger = console) {
   }
 }
 
+function createLiveSession({ adkState, env, sessionId, onEvent, logger = console }) {
+  if (adkState.status === "connected" && env.enableRealAdkLive) {
+    logger.warn(
+      "Real ADK Live stream wiring is not enabled in this repository yet; using deterministic mock stream."
+    );
+  }
+
+  return new MockLiveSession({
+    sessionId,
+    onEvent,
+    options: {
+      vadMode: env.vadMode,
+      vadSilenceMs: env.mockVadSilenceMs,
+      responseIntervalMs: env.mockResponseIntervalMs,
+      responseChunks: env.mockResponseChunks
+    }
+  });
+}
+
 module.exports = {
-  initializeAdkConnection
+  initializeAdkConnection,
+  createLiveSession
 };
