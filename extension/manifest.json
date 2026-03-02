@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "KindlyClick",
+  "version": "0.1.0",
+  "description": "KindlyClick Senior Navigator extension shell (Milestone 1)",
+  "action": {
+    "default_title": "KindlyClick"
+  },
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["<all_urls>"]
+}

@@ -1,0 +1,8 @@
+{
+  "type": "session_start",
+  "sessionId": "replace-at-runtime",
+  "userId": "harness-user",
+  "metadata": {
+    "source": "tests/harness.js"
+  }
+}
