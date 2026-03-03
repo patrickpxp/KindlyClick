@@ -1,0 +1,40 @@
+{
+  "frames": [
+    {
+      "frameIndex": 1,
+      "mockScene": "sign_in",
+      "mimeType": "image/jpeg",
+      "width": 1280,
+      "height": 720,
+      "imageBase64": "TU9DS19TVEFUSUNfSU1BR0VfU0lHTl9JTl9QQUdF",
+      "metadata": {
+        "pageTitle": "Sign In",
+        "pageUrl": "https://example.com/signin"
+      }
+    },
+    {
+      "frameIndex": 2,
+      "mockScene": "dashboard",
+      "mimeType": "image/jpeg",
+      "width": 1280,
+      "height": 720,
+      "imageBase64": "TU9DS19TVEFUSUNfSU1BR0VfREFTSEJPQVJEX1BBR0U=",
+      "metadata": {
+        "pageTitle": "Dashboard",
+        "pageUrl": "https://example.com/dashboard"
+      }
+    },
+    {
+      "frameIndex": 3,
+      "mockScene": "settings",
+      "mimeType": "image/jpeg",
+      "width": 1280,
+      "height": 720,
+      "imageBase64": "TU9DS19TVEFUSUNfSU1BR0VfU0VUVElOR1NfUEFHRQ==",
+      "metadata": {
+        "pageTitle": "Settings",
+        "pageUrl": "https://example.com/settings"
+      }
+    }
+  ]
+}

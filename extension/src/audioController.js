@@ -122,6 +122,7 @@
 
       this.clientSeq = 0;
       this.status = "idle";
+      this.visionFrameCounter = 0;
 
       this.emitState();
     }
@@ -181,6 +182,58 @@
 
       this.trace({ direction: "out", message });
       this.socket.send(JSON.stringify(message));
+    }
+
+    sendVisionFrame({
+      imageBase64,
+      mimeType = "image/jpeg",
+      width = null,
+      height = null,
+      frameIndex = null,
+      metadata = {}
+    }) {
+      if (!this.isSocketOpen() || !this.sessionReady) {
+        return false;
+      }
+
+      if (typeof imageBase64 !== "string" || imageBase64.length === 0) {
+        return false;
+      }
+
+      this.visionFrameCounter += 1;
+
+      this.send({
+        type: "realtime_input",
+        sessionId: this.sessionId,
+        modality: "vision",
+        imageBase64,
+        mimeType,
+        width,
+        height,
+        frameIndex: frameIndex || this.visionFrameCounter,
+        metadata
+      });
+
+      return true;
+    }
+
+    sendUserText(text) {
+      if (!this.isSocketOpen() || !this.sessionReady) {
+        return false;
+      }
+
+      const normalizedText = String(text || "").trim();
+      if (!normalizedText) {
+        return false;
+      }
+
+      this.send({
+        type: "user_text",
+        sessionId: this.sessionId,
+        text: normalizedText
+      });
+
+      return true;
     }
 
     connect(rawWsUrl) {
@@ -469,6 +522,15 @@
         this.activePlaybackStreamId = null;
         this.player.clear();
         this.log(`clear_buffer received (${message.reason})`);
+        return;
+      }
+
+      if (message.type === "vision_input_ack") {
+        return;
+      }
+
+      if (message.type === "text_output") {
+        this.log(`assistant: ${message.text}`);
         return;
       }
 

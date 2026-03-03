@@ -1,5 +1,14 @@
 const { MockLiveSession } = require("./mockLiveSession");
 
+function buildRunnerConfig(env) {
+  return {
+    modalities: ["audio", "vision"],
+    vadMode: env.vadMode,
+    systemPrompt:
+      "You are KindlyClick. You can hear the user and see their screen frames. Guide them step-by-step using spatial language and patience."
+  };
+}
+
 async function initializeAdkConnection(logger = console) {
   try {
     const adkModule = await import("@google/adk");
@@ -23,10 +32,13 @@ async function initializeAdkConnection(logger = console) {
 }
 
 function createLiveSession({ adkState, env, sessionId, onEvent, logger = console }) {
+  const runnerConfig = buildRunnerConfig(env);
+
   if (adkState.status === "connected" && env.enableRealAdkLive) {
     logger.warn(
       "Real ADK Live stream wiring is not enabled in this repository yet; using deterministic mock stream."
     );
+    logger.info("Configured ADK Runner", runnerConfig);
   }
 
   return new MockLiveSession({
@@ -43,5 +55,6 @@ function createLiveSession({ adkState, env, sessionId, onEvent, logger = console
 
 module.exports = {
   initializeAdkConnection,
-  createLiveSession
+  createLiveSession,
+  buildRunnerConfig
 };

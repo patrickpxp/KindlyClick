@@ -6,6 +6,7 @@ const { spawn } = require("child_process");
 const BACKEND_ENTRY = path.resolve(__dirname, "../backend/src/server.js");
 const FIXTURE_PATH = path.resolve(__dirname, "fixtures/sessionStart.json");
 const SAMPLE_WAV_PATH = path.resolve(__dirname, "fixtures/sample_16k_mono.wav");
+const VISION_FIXTURE_PATH = path.resolve(__dirname, "fixtures/visionFrames.json");
 const PORT = Number(process.env.HARNESS_PORT || 8090);
 const EXPECTED_RESPONSE_CHUNKS = Number(process.env.MOCK_RESPONSE_CHUNKS || 12);
 
@@ -39,6 +40,17 @@ async function readFixture(sessionId) {
   const raw = await fs.readFile(FIXTURE_PATH, "utf8");
   const payload = JSON.parse(raw);
   payload.sessionId = sessionId;
+  return payload;
+}
+
+async function readVisionFixture() {
+  const raw = await fs.readFile(VISION_FIXTURE_PATH, "utf8");
+  const payload = JSON.parse(raw);
+
+  if (!Array.isArray(payload.frames) || payload.frames.length < 3) {
+    throw new Error("Vision fixture requires at least 3 frames");
+  }
+
   return payload;
 }
 
@@ -276,6 +288,69 @@ async function runInterruptionScenario(ws, sessionId, parsedWav) {
   });
 }
 
+async function runVisionScenario(ws, sessionId) {
+  const fixture = await readVisionFixture();
+
+  for (const frame of fixture.frames) {
+    ws.send(
+      JSON.stringify({
+        type: "realtime_input",
+        sessionId,
+        modality: "vision",
+        imageBase64: frame.imageBase64,
+        mimeType: frame.mimeType || "image/jpeg",
+        width: frame.width || 1280,
+        height: frame.height || 720,
+        frameIndex: frame.frameIndex,
+        mockScene: frame.mockScene,
+        metadata: frame.metadata || {}
+      })
+    );
+
+    await waitForMessage(
+      ws,
+      (message) => {
+        return (
+          message.type === "vision_input_ack" &&
+          message.sessionId === sessionId &&
+          Number(message.frameIndex) === Number(frame.frameIndex)
+        );
+      },
+      5000
+    );
+
+    await sleep(80);
+  }
+
+  ws.send(
+    JSON.stringify({
+      type: "user_text",
+      sessionId,
+      text: "What do you see?"
+    })
+  );
+
+  const answer = await waitForMessage(
+    ws,
+    (message) => message.type === "text_output" && message.sessionId === sessionId,
+    7000
+  );
+
+  const responseText = String(answer.text || "").toLowerCase();
+  const requiredTokens = ["sign in", "dashboard", "settings"];
+
+  const missing = requiredTokens.filter((token) => !responseText.includes(token));
+  if (missing.length > 0) {
+    throw new Error(
+      `Vision response missing required elements: ${missing.join(", ")}. Response was: ${answer.text}`
+    );
+  }
+
+  return {
+    responseText: answer.text
+  };
+}
+
 async function verifyPersistedSession(sessionId) {
   const response = await fetch(`http://127.0.0.1:${PORT}/debug/sessions/${sessionId}`);
 
@@ -327,12 +402,15 @@ async function run() {
     });
 
     await verifyPersistedSession(sessionId);
-    const scenario = await runInterruptionScenario(ws, sessionId, parsedWav);
+
+    const vision = await runVisionScenario(ws, sessionId);
+    const audio = await runInterruptionScenario(ws, sessionId, parsedWav);
 
     ws.close();
 
+    console.log(`Harness vision check passed: ${vision.responseText}`);
     console.log(
-      `Harness passed: barge-in verified (firstStreamChunks=${scenario.firstStreamChunks}, secondStreamChunks=${scenario.secondStreamChunks}).`
+      `Harness audio barge-in passed: firstStreamChunks=${audio.firstStreamChunks}, secondStreamChunks=${audio.secondStreamChunks}`
     );
   } finally {
     backend.kill("SIGTERM");

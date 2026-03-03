@@ -1,5 +1,9 @@
 const TARGET_SAMPLE_RATE = 16000;
 const MIC_SELECTION_STORAGE_KEY = "kindlyclick:selectedMicDeviceId";
+const VISION_CAPTURE_WIDTH = 1280;
+const VISION_CAPTURE_HEIGHT = 720;
+const VISION_CAPTURE_INTERVAL_MS = 1000;
+const VISION_JPEG_QUALITY = 0.6;
 
 class MicrophoneStreamer {
   constructor() {
@@ -148,6 +152,139 @@ class PcmPlayer {
   }
 }
 
+class VisionCaptureLoop {
+  constructor({ onFrame, onStatus }) {
+    this.onFrame = onFrame;
+    this.onStatus = onStatus;
+
+    this.stream = null;
+    this.video = null;
+    this.canvas = null;
+    this.ctx = null;
+    this.intervalId = null;
+    this.frameIndex = 0;
+    this.lastSentAt = 0;
+    this.active = false;
+  }
+
+  isActive() {
+    return this.active;
+  }
+
+  async start() {
+    if (this.active) {
+      return;
+    }
+
+    this.stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        width: { ideal: VISION_CAPTURE_WIDTH },
+        height: { ideal: VISION_CAPTURE_HEIGHT },
+        frameRate: { ideal: 10, max: 15 }
+      },
+      audio: false
+    });
+
+    this.video = document.createElement("video");
+    this.video.srcObject = this.stream;
+    this.video.muted = true;
+    this.video.playsInline = true;
+    await this.video.play();
+
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = VISION_CAPTURE_WIDTH;
+    this.canvas.height = VISION_CAPTURE_HEIGHT;
+    this.ctx = this.canvas.getContext("2d", { alpha: false, desynchronized: true });
+
+    this.frameIndex = 0;
+    this.lastSentAt = 0;
+    this.active = true;
+
+    const [track] = this.stream.getVideoTracks();
+    if (track) {
+      track.onended = () => {
+        this.stop("screen share ended").catch(() => {});
+      };
+    }
+
+    this.onStatus({
+      active: true,
+      frameIndex: this.frameIndex,
+      fps: 1,
+      reason: "started"
+    });
+
+    await this.captureFrame();
+    this.intervalId = setInterval(() => {
+      this.captureFrame().catch(() => {});
+    }, VISION_CAPTURE_INTERVAL_MS);
+  }
+
+  async captureFrame() {
+    if (!this.active || !this.video || !this.ctx || !this.canvas) {
+      return;
+    }
+
+    this.ctx.drawImage(this.video, 0, 0, VISION_CAPTURE_WIDTH, VISION_CAPTURE_HEIGHT);
+    const dataUrl = this.canvas.toDataURL("image/jpeg", VISION_JPEG_QUALITY);
+    const commaIndex = dataUrl.indexOf(",");
+    const imageBase64 = commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : "";
+
+    if (!imageBase64) {
+      return;
+    }
+
+    this.frameIndex += 1;
+    this.lastSentAt = Date.now();
+
+    await this.onFrame({
+      imageBase64,
+      mimeType: "image/jpeg",
+      width: VISION_CAPTURE_WIDTH,
+      height: VISION_CAPTURE_HEIGHT,
+      frameIndex: this.frameIndex,
+      jpegQuality: VISION_JPEG_QUALITY
+    });
+
+    this.onStatus({
+      active: true,
+      frameIndex: this.frameIndex,
+      fps: 1,
+      reason: "frame_sent",
+      lastSentAt: this.lastSentAt
+    });
+  }
+
+  async stop(reason = "stopped") {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+
+    if (this.stream) {
+      this.stream.getTracks().forEach((track) => track.stop());
+      this.stream = null;
+    }
+
+    if (this.video) {
+      this.video.pause();
+      this.video.srcObject = null;
+      this.video = null;
+    }
+
+    this.canvas = null;
+    this.ctx = null;
+    this.active = false;
+
+    this.onStatus({
+      active: false,
+      frameIndex: this.frameIndex,
+      fps: 0,
+      reason
+    });
+  }
+}
+
 function resampleFloat32Mono(input, inputSampleRate, targetSampleRate) {
   if (!Number.isFinite(inputSampleRate) || inputSampleRate <= 0 || input.length === 0) {
     return input;
@@ -229,8 +366,12 @@ function createUi() {
     startMicBtn: document.getElementById("startMicBtn"),
     endTurnBtn: document.getElementById("endTurnBtn"),
     stopMicBtn: document.getElementById("stopMicBtn"),
+    startVisionBtn: document.getElementById("startVisionBtn"),
+    stopVisionBtn: document.getElementById("stopVisionBtn"),
+    askVisionBtn: document.getElementById("askVisionBtn"),
     status: document.getElementById("status"),
     micInfo: document.getElementById("micInfo"),
+    visionInfo: document.getElementById("visionInfo"),
     log: document.getElementById("log")
   };
 }
@@ -253,6 +394,14 @@ function formatMicInfo(micInfo) {
   return `Mic (${state}): ${name} | deviceId=${deviceId} | ${sampleRate} ${channelCount}`;
 }
 
+function formatVisionInfo(visionState) {
+  if (!visionState || !visionState.active) {
+    return "Vision: idle";
+  }
+
+  return `Vision: active | ${VISION_CAPTURE_WIDTH}x${VISION_CAPTURE_HEIGHT} JPEG q=${VISION_JPEG_QUALITY} | 1 FPS | frames=${visionState.frameCount}`;
+}
+
 function renderState(ui, state) {
   ui.status.textContent = `Status: ${state.status}`;
   ui.micInfo.textContent = formatMicInfo(state.micInfo);
@@ -263,6 +412,7 @@ function renderState(ui, state) {
     !state.connected || !state.sessionReady || state.micActive || state.micStarting || !state.hasGrantedMicStream;
   ui.endTurnBtn.disabled = !state.micActive;
   ui.stopMicBtn.disabled = !state.micActive;
+  ui.askVisionBtn.disabled = !state.connected || !state.sessionReady;
 }
 
 function loadSelectedMicDeviceId() {
@@ -315,11 +465,51 @@ function renderMicOptions(ui, devices, selectedDeviceId) {
   ui.micSelect.value = selectedExists ? selectedDeviceId : "";
 }
 
+async function getActiveTabMetadata() {
+  if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
+    return {};
+  }
+
+  try {
+    const context = await chrome.runtime.sendMessage({
+      type: "kindlyclick:get-active-tab-context"
+    });
+    const hintsResponse = await chrome.runtime.sendMessage({
+      type: "kindlyclick:get-content-hints"
+    });
+
+    return {
+      pageTitle: context?.pageTitle || hintsResponse?.hints?.pageTitle || "",
+      pageUrl: context?.pageUrl || "",
+      tabId: context?.tabId || null,
+      headingHints: hintsResponse?.hints?.headingHints || [],
+      buttonHints: hintsResponse?.hints?.buttonHints || []
+    };
+  } catch (error) {
+    return {};
+  }
+}
+
 (function bootstrap() {
   const ui = createUi();
   const micStreamer = new MicrophoneStreamer();
   const pcmPlayer = new PcmPlayer();
   let selectedMicDeviceId = loadSelectedMicDeviceId();
+  let controllerSnapshot = {
+    connected: false,
+    sessionReady: false
+  };
+  const visionState = {
+    active: false,
+    frameCount: 0
+  };
+
+  const updateVisionUi = () => {
+    ui.visionInfo.textContent = formatVisionInfo(visionState);
+    ui.startVisionBtn.disabled =
+      visionState.active || !controllerSnapshot.connected || !controllerSnapshot.sessionReady;
+    ui.stopVisionBtn.disabled = !visionState.active;
+  };
 
   async function refreshMicDevices(logLabel = null) {
     const devices = await listAudioInputDevices();
@@ -335,7 +525,33 @@ function renderMicOptions(ui, devices, selectedDeviceId) {
     }
   }
 
-  const controller = new window.KindlyClickAudioController.AudioController({
+  let controller = null;
+
+  const visionLoop = new VisionCaptureLoop({
+    onFrame: async (frame) => {
+      const metadata = await getActiveTabMetadata();
+      const delivered = controller.sendVisionFrame({
+        ...frame,
+        metadata
+      });
+
+      if (delivered) {
+        visionState.frameCount = frame.frameIndex;
+      }
+    },
+    onStatus: ({ active, frameIndex, reason }) => {
+      visionState.active = active;
+      if (typeof frameIndex === "number") {
+        visionState.frameCount = frameIndex;
+      }
+      updateVisionUi();
+      if (reason === "screen share ended") {
+        appendLog(ui, "vision capture ended by browser");
+      }
+    }
+  });
+
+  controller = new window.KindlyClickAudioController.AudioController({
     socketFactory: (url) => new WebSocket(url),
     mic: {
       requestPermission: ({ deviceId } = {}) => {
@@ -376,7 +592,15 @@ function renderMicOptions(ui, devices, selectedDeviceId) {
       clear: () => pcmPlayer.clear()
     },
     logFn: (text) => appendLog(ui, text),
-    stateFn: (state) => renderState(ui, state),
+    stateFn: (state) => {
+      controllerSnapshot = state;
+      renderState(ui, state);
+      updateVisionUi();
+
+      if (!state.connected && visionLoop.isActive()) {
+        visionLoop.stop("socket disconnected").catch(() => {});
+      }
+    },
     traceFn: () => {
       // Keep available for future diagnostics; not rendered by default.
     }
@@ -433,7 +657,38 @@ function renderMicOptions(ui, devices, selectedDeviceId) {
     });
   });
 
+  ui.startVisionBtn.addEventListener("click", () => {
+    visionLoop
+      .start()
+      .then(() => {
+        appendLog(ui, "vision capture started (1 FPS, 720p JPEG)");
+      })
+      .catch((error) => {
+        appendLog(ui, `vision start error: ${error.name || "Error"}: ${error.message}`);
+      });
+  });
+
+  ui.stopVisionBtn.addEventListener("click", () => {
+    visionLoop
+      .stop("manual stop")
+      .then(() => {
+        appendLog(ui, "vision capture stopped");
+      })
+      .catch((error) => {
+        appendLog(ui, `vision stop error: ${error.message}`);
+      });
+  });
+
+  ui.askVisionBtn.addEventListener("click", () => {
+    const delivered = controller.sendUserText("What do you see?");
+    if (!delivered) {
+      appendLog(ui, "vision question not sent: connect session first");
+    }
+  });
+
   refreshMicDevices().catch((error) => {
     appendLog(ui, `initial mic list error: ${error.message}`);
   });
+
+  updateVisionUi();
 })();

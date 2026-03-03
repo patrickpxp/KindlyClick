@@ -116,6 +116,28 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
               vadMode: event.vadMode,
               interruptedStreamId: event.interruptedStreamId
             });
+            return;
+          }
+
+          if (event.type === "vision_input_ack") {
+            send({
+              type: "vision_input_ack",
+              sessionId: state.sessionId,
+              frameIndex: event.frameIndex,
+              sceneKey: event.sceneKey,
+              sceneLabel: event.sceneLabel,
+              elements: event.elements
+            });
+            return;
+          }
+
+          if (event.type === "text_output") {
+            send({
+              type: "text_output",
+              sessionId: state.sessionId,
+              responseId: event.responseId,
+              text: event.text
+            });
           }
         }
       });
@@ -182,6 +204,49 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
           }
 
           state.liveSession.signalInputEnded();
+          return;
+        }
+
+        if (message.type === "realtime_input") {
+          if (!state.liveSession || !state.sessionId) {
+            send({ type: "error", error: "session_start is required before realtime_input" });
+            return;
+          }
+
+          if (message.modality !== "vision") {
+            send({ type: "error", error: "realtime_input currently supports only modality=vision" });
+            return;
+          }
+
+          if (typeof message.imageBase64 !== "string" || message.imageBase64.length === 0) {
+            send({ type: "error", error: "realtime_input requires imageBase64" });
+            return;
+          }
+
+          state.liveSession.ingestVisionFrame({
+            imageBase64: message.imageBase64,
+            mimeType: message.mimeType || "image/jpeg",
+            width: message.width || null,
+            height: message.height || null,
+            frameIndex: message.frameIndex || null,
+            mockScene: message.mockScene || null,
+            metadata: message.metadata || {}
+          });
+          return;
+        }
+
+        if (message.type === "user_text") {
+          if (!state.liveSession || !state.sessionId) {
+            send({ type: "error", error: "session_start is required before user_text" });
+            return;
+          }
+
+          if (typeof message.text !== "string" || message.text.trim().length === 0) {
+            send({ type: "error", error: "user_text requires text" });
+            return;
+          }
+
+          state.liveSession.handleUserText(message.text);
           return;
         }
 

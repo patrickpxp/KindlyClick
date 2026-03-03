@@ -92,6 +92,13 @@
         line-height: 1.3;
       }
 
+      #visionInfo {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.3;
+      }
+
       #log {
         margin-top: 10px;
         max-height: 220px;
@@ -131,8 +138,18 @@
         <button id="stopMicBtn" class="danger" disabled>Stop Mic</button>
       </div>
 
+      <div class="row">
+        <button id="startVisionBtn">Start Vision</button>
+        <button id="stopVisionBtn" class="danger" disabled>Stop Vision</button>
+      </div>
+
+      <div class="row">
+        <button id="askVisionBtn" disabled>Ask: What do you see?</button>
+      </div>
+
       <div id="status">Status: idle</div>
       <div id="micInfo">Mic: not requested</div>
+      <div id="visionInfo">Vision: idle</div>
       <div id="log"></div>
     </div>
 
