@@ -286,7 +286,7 @@ async function startServer() {
   const sessionManager = new SessionManager(firestore);
 
   const adkState = await initializeAdkConnection(console);
-  console.log(`ADK status: ${adkState.status}`);
+  console.log(`Gemini SDK status: ${adkState.status}`);
 
   const server = http.createServer(createHttpHandler(sessionManager));
   const wss = new WebSocketServer({ server, path: "/ws" });
