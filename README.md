@@ -1,10 +1,10 @@
 # KindlyClick
 
-Milestone 3 foundation for the KindlyClick Live Agent project.
+Milestone 3.5 foundation for the KindlyClick Live Agent project.
 
 ## Structure
 
-- `backend/`: Node.js backend with WebSocket session management, audio streaming, vision frame ingestion, and barge-in signaling.
+- `backend/`: Node.js backend with WebSocket session management, audio streaming, vision frame ingestion, barge-in signaling, and optional real Gemini Live wiring.
 - `terraform/`: Infrastructure-as-code for APIs, Firestore Native DB, and Cloud Run placeholder service.
 - `extension/`: Chrome extension side panel with 16kHz mono microphone capture, 1 FPS screen vision capture, and response playback.
 - `extension/src/audioController.js`: Reusable audio/session state machine used by both UI and harness tests.
@@ -21,7 +21,7 @@ cd backend
 npm install
 ```
 
-2. Start the backend (use any free local port):
+2. Start the backend in mock mode (use any free local port):
 
 ```bash
 PORT=8091 npm start
@@ -52,12 +52,45 @@ ws://127.0.0.1:8091/ws
 6. Side panel interaction flow:
 
 ```bash
-Connect -> Request Mic -> Start Mic
+Connect -> Start Mic
 Connect -> Start Vision (share current tab/window when prompted)
 ```
 
+If side panel mic permission is dismissed, the extension opens a helper tab
+(`request-mic.html`) so the user can grant microphone access there; the side panel then retries `Start Mic` automatically.
+
 Use `End Turn` to deterministically trigger an audio response while keeping mic active for barge-in.
 Use `Ask: What do you see?` to request a vision summary from the latest screen frames.
+
+## Real Gemini Live mode (Milestone 3.5)
+
+The backend defaults to deterministic mock mode.
+
+To run against Gemini Live on Vertex AI:
+
+```bash
+export ENABLE_REAL_GEMINI_LIVE=true
+export GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID"
+export GOOGLE_CLOUD_LOCATION="us-central1"
+# Current Vertex Live default:
+export GEMINI_LIVE_MODEL="gemini-live-2.5-flash-native-audio"
+# Optional fallback chain (comma-separated):
+export GEMINI_LIVE_FALLBACK_MODELS="gemini-live-2.5-flash-preview-native-audio-09-2025,gemini-2.0-flash-live-preview-04-09"
+```
+
+Then start the backend:
+
+```bash
+HOST=0.0.0.0 PORT=8091 npm --prefix backend start
+```
+
+If needed, you can override SDK settings:
+
+```bash
+export GEMINI_API_VERSION="v1"
+# Optional: set false to use API key mode instead of Vertex AI.
+export GEMINI_USE_VERTEXAI=true
+```
 
 ## Terraform usage
 

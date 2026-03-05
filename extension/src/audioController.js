@@ -71,8 +71,8 @@
       stateFn = () => {},
       traceFn = () => {},
       nowFn = () => Date.now(),
-      setTimeoutFn = setTimeout,
-      clearTimeoutFn = clearTimeout,
+      setTimeoutFn = (...args) => globalThis.setTimeout(...args),
+      clearTimeoutFn = (...args) => globalThis.clearTimeout(...args),
       config = {}
     }) {
       if (typeof socketFactory !== "function") {
@@ -86,8 +86,9 @@
       this.stateFn = stateFn;
       this.traceFn = traceFn;
       this.nowFn = nowFn;
-      this.setTimeoutFn = setTimeoutFn;
-      this.clearTimeoutFn = clearTimeoutFn;
+      // Timer functions can throw "Illegal invocation" if called with the wrong `this`.
+      this.setTimeoutFn = (callback, delayMs) => setTimeoutFn.call(globalThis, callback, delayMs);
+      this.clearTimeoutFn = (timerId) => clearTimeoutFn.call(globalThis, timerId);
 
       this.config = {
         targetSampleRate: config.targetSampleRate || 16000,
@@ -357,13 +358,18 @@
       this.emitState();
     }
 
-    async startMicrophone() {
+    async startMicrophone(options = {}) {
       if (!this.connected || !this.sessionReady || this.micActive || this.micStarting) {
         return;
       }
 
       if (!this.grantedMicStream) {
-        this.log("mic not ready: click Request Mic first");
+        this.log("requesting microphone permission");
+        await this.requestMicrophonePermission(options);
+      }
+
+      if (!this.grantedMicStream) {
+        this.log("microphone permission not granted");
         return;
       }
 

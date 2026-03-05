@@ -47,6 +47,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           error: error.message || "Failed to fetch content hints"
         });
       }
+      return;
+    }
+
+    if (message.type === "kindlyclick:open-mic-permission-tab") {
+      const selectedDeviceId =
+        typeof message.deviceId === "string" ? message.deviceId.trim() : "";
+      const url = new URL(chrome.runtime.getURL("request-mic.html"));
+
+      if (selectedDeviceId) {
+        url.searchParams.set("deviceId", selectedDeviceId);
+      }
+
+      const tab = await chrome.tabs.create({
+        url: url.toString(),
+        active: true
+      });
+
+      sendResponse({
+        ok: true,
+        tabId: tab?.id || null
+      });
+      return;
+    }
+
+    if (message.type === "kindlyclick:mic-permission-granted") {
+      sendResponse({ ok: true });
+      return;
     }
   })().catch((error) => {
     sendResponse({ ok: false, error: error.message || "Unhandled background error" });

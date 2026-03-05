@@ -6,7 +6,7 @@
   "action": {
     "default_title": "KindlyClick"
   },
-  "permissions": ["storage", "activeTab", "microphone", "sidePanel", "tabs"],
+  "permissions": ["storage", "activeTab", "sidePanel", "tabs"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

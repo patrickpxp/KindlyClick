@@ -4,6 +4,8 @@ const VISION_CAPTURE_WIDTH = 1280;
 const VISION_CAPTURE_HEIGHT = 720;
 const VISION_CAPTURE_INTERVAL_MS = 1000;
 const VISION_JPEG_QUALITY = 0.6;
+const MIC_WORKLET_NAME = "kindlyclick-mic-capture";
+const MIC_WORKLET_PATH = "micCaptureWorklet.js";
 
 class MicrophoneStreamer {
   constructor() {
@@ -42,33 +44,54 @@ class MicrophoneStreamer {
     await this.audioContext.resume();
 
     this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
-    this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
     this.silentGainNode = this.audioContext.createGain();
     this.silentGainNode.gain.value = 0;
-
-    this.processorNode.onaudioprocess = (event) => {
-      const input = event.inputBuffer.getChannelData(0);
-      const resampled = resampleFloat32Mono(input, this.audioContext.sampleRate, TARGET_SAMPLE_RATE);
-      const pcm16 = floatToPcm16(resampled);
-      const rms = computeRms(resampled);
-
-      if (this.onChunk) {
-        this.onChunk({
-          pcm16Base64: toBase64FromInt16(pcm16),
-          rms
-        });
-      }
-    };
+    this.processorNode = await this.createCaptureNode();
 
     this.sourceNode.connect(this.processorNode);
     this.processorNode.connect(this.silentGainNode);
     this.silentGainNode.connect(this.audioContext.destination);
   }
 
+  async createCaptureNode() {
+    if (this.audioContext.audioWorklet && typeof AudioWorkletNode !== "undefined") {
+      const moduleUrl = chrome.runtime.getURL(MIC_WORKLET_PATH);
+      await this.audioContext.audioWorklet.addModule(moduleUrl);
+
+      const node = new AudioWorkletNode(this.audioContext, MIC_WORKLET_NAME, {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        channelCount: 1,
+        channelCountMode: "explicit"
+      });
+
+      node.port.onmessage = (event) => {
+        const input =
+          event.data instanceof Float32Array ? event.data : new Float32Array(event.data || []);
+        const resampled = resampleFloat32Mono(input, this.audioContext.sampleRate, TARGET_SAMPLE_RATE);
+        const pcm16 = floatToPcm16(resampled);
+        const rms = computeRms(resampled);
+
+        if (this.onChunk) {
+          this.onChunk({
+            pcm16Base64: toBase64FromInt16(pcm16),
+            rms
+          });
+        }
+      };
+
+      return node;
+    }
+
+    throw new Error("AudioWorklet is required but not available in this browser context");
+  }
+
   async stop() {
     if (this.processorNode) {
       this.processorNode.disconnect();
-      this.processorNode.onaudioprocess = null;
+      if (this.processorNode.port) {
+        this.processorNode.port.onmessage = null;
+      }
       this.processorNode = null;
     }
 
@@ -362,7 +385,6 @@ function createUi() {
     disconnectBtn: document.getElementById("disconnectBtn"),
     micSelect: document.getElementById("micSelect"),
     refreshMicBtn: document.getElementById("refreshMicBtn"),
-    requestMicBtn: document.getElementById("requestMicBtn"),
     startMicBtn: document.getElementById("startMicBtn"),
     endTurnBtn: document.getElementById("endTurnBtn"),
     stopMicBtn: document.getElementById("stopMicBtn"),
@@ -407,9 +429,8 @@ function renderState(ui, state) {
   ui.micInfo.textContent = formatMicInfo(state.micInfo);
   ui.connectBtn.disabled = state.connected || state.connecting;
   ui.disconnectBtn.disabled = !state.connected;
-  ui.requestMicBtn.disabled = state.micActive || state.micStarting;
   ui.startMicBtn.disabled =
-    !state.connected || !state.sessionReady || state.micActive || state.micStarting || !state.hasGrantedMicStream;
+    !state.connected || !state.sessionReady || state.micActive || state.micStarting;
   ui.endTurnBtn.disabled = !state.micActive;
   ui.stopMicBtn.disabled = !state.micActive;
   ui.askVisionBtn.disabled = !state.connected || !state.sessionReady;
@@ -443,6 +464,50 @@ async function listAudioInputDevices() {
 
   const devices = await navigator.mediaDevices.enumerateDevices();
   return devices.filter((device) => device.kind === "audioinput");
+}
+
+async function readMicrophonePermissionState() {
+  if (!navigator.permissions || !navigator.permissions.query) {
+    return "unknown";
+  }
+
+  try {
+    const permission = await navigator.permissions.query({ name: "microphone" });
+    return permission.state;
+  } catch (error) {
+    return "unknown";
+  }
+}
+
+function isMicPermissionDismissedError(error) {
+  if (!error || error.name !== "NotAllowedError") {
+    return false;
+  }
+
+  const message = String(error.message || "").toLowerCase();
+  return message.includes("dismissed");
+}
+
+async function openMicPermissionTab(deviceId) {
+  if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
+    return {
+      ok: false,
+      error: "chrome.runtime.sendMessage unavailable"
+    };
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "kindlyclick:open-mic-permission-tab",
+      deviceId: deviceId || ""
+    });
+    return response || { ok: false, error: "No response from background" };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error.message || "Failed to open permission tab"
+    };
+  }
 }
 
 function renderMicOptions(ui, devices, selectedDeviceId) {
@@ -499,6 +564,9 @@ async function getActiveTabMetadata() {
     connected: false,
     sessionReady: false
   };
+  let awaitingMicPermissionHelper = false;
+  let helperRetryInFlight = false;
+  let micPermissionPollIntervalId = null;
   const visionState = {
     active: false,
     frameCount: 0
@@ -526,6 +594,102 @@ async function getActiveTabMetadata() {
   }
 
   let controller = null;
+
+  function stopMicPermissionPolling() {
+    if (!micPermissionPollIntervalId) {
+      return;
+    }
+
+    clearInterval(micPermissionPollIntervalId);
+    micPermissionPollIntervalId = null;
+  }
+
+  async function maybeAutoRetryMicStart(source) {
+    if (!awaitingMicPermissionHelper || helperRetryInFlight) {
+      return;
+    }
+
+    if (!controllerSnapshot.connected || !controllerSnapshot.sessionReady) {
+      return;
+    }
+
+    const permissionState = await readMicrophonePermissionState();
+    if (permissionState !== "granted") {
+      return;
+    }
+
+    helperRetryInFlight = true;
+
+    try {
+      appendLog(ui, `microphone permission detected (${source}); retrying Start Mic`);
+      await startMicWithCurrentSelection("helper", { allowOpenHelper: false });
+    } finally {
+      helperRetryInFlight = false;
+    }
+  }
+
+  function startMicPermissionPolling() {
+    if (micPermissionPollIntervalId) {
+      return;
+    }
+
+    micPermissionPollIntervalId = setInterval(() => {
+      maybeAutoRetryMicStart("poll").catch(() => {});
+    }, 800);
+  }
+
+  async function startMicWithCurrentSelection(
+    trigger = "manual",
+    { allowOpenHelper = true } = {}
+  ) {
+    try {
+      await controller.startMicrophone({ deviceId: selectedMicDeviceId || undefined });
+      awaitingMicPermissionHelper = false;
+      stopMicPermissionPolling();
+      await refreshMicDevices();
+      if (trigger === "helper") {
+        appendLog(ui, "microphone started automatically after helper permission grant");
+      }
+    } catch (error) {
+      appendLog(ui, `mic start error: ${error.name || "Error"}: ${error.message}`);
+      const isPermissionError = error && error.name === "NotAllowedError";
+      if (!isPermissionError) {
+        return;
+      }
+
+      const permissionState = await readMicrophonePermissionState();
+      if (permissionState === "denied") {
+        awaitingMicPermissionHelper = false;
+        stopMicPermissionPolling();
+        appendLog(
+          ui,
+          "microphone is blocked in Chrome settings for this extension origin"
+        );
+        return;
+      }
+
+      if (!isMicPermissionDismissedError(error) && permissionState === "granted") {
+        return;
+      }
+
+      if (!allowOpenHelper) {
+        return;
+      }
+
+      const openResult = await openMicPermissionTab(selectedMicDeviceId);
+      if (!openResult.ok) {
+        appendLog(ui, `mic permission helper error: ${openResult.error || "unknown error"}`);
+        return;
+      }
+
+      awaitingMicPermissionHelper = true;
+      startMicPermissionPolling();
+      appendLog(
+        ui,
+        "opened microphone permission tab; click Allow there and this side panel will retry automatically"
+      );
+    }
+  }
 
   const visionLoop = new VisionCaptureLoop({
     onFrame: async (frame) => {
@@ -565,18 +729,7 @@ async function getActiveTabMetadata() {
 
         return navigator.mediaDevices.getUserMedia({ audio: true });
       },
-      readPermissionState: async () => {
-        if (!navigator.permissions || !navigator.permissions.query) {
-          return "unknown";
-        }
-
-        try {
-          const permission = await navigator.permissions.query({ name: "microphone" });
-          return permission.state;
-        } catch (error) {
-          return "unknown";
-        }
-      },
+      readPermissionState: () => readMicrophonePermissionState(),
       start: (stream, onChunk) => micStreamer.start(stream, onChunk),
       stop: () => micStreamer.stop(),
       releaseStream: (stream) => {
@@ -615,6 +768,8 @@ async function getActiveTabMetadata() {
   });
 
   ui.disconnectBtn.addEventListener("click", () => {
+    awaitingMicPermissionHelper = false;
+    stopMicPermissionPolling();
     controller.disconnect().catch((error) => {
       appendLog(ui, `disconnect error: ${error.message}`);
     });
@@ -632,19 +787,30 @@ async function getActiveTabMetadata() {
     });
   });
 
-  ui.requestMicBtn.addEventListener("click", () => {
-    controller
-      .requestMicrophonePermission({ deviceId: selectedMicDeviceId || undefined })
-      .then(() => refreshMicDevices())
-      .catch((error) => {
-      appendLog(ui, `mic request error: ${error.name || "Error"}: ${error.message}`);
+  if (globalThis.chrome && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((message) => {
+      if (!message || message.type !== "kindlyclick:mic-permission-granted") {
+        return;
+      }
+
+      if (!awaitingMicPermissionHelper) {
+        return;
+      }
+
+      Promise.resolve()
+        .then(async () => {
+          if (message.usedFallbackDevice) {
+            selectedMicDeviceId = "";
+            saveSelectedMicDeviceId(selectedMicDeviceId);
+          }
+
+          await maybeAutoRetryMicStart("message");
+        });
     });
-  });
+  }
 
   ui.startMicBtn.addEventListener("click", () => {
-    controller.startMicrophone().catch((error) => {
-      appendLog(ui, `mic start error: ${error.name || "Error"}: ${error.message}`);
-    });
+    startMicWithCurrentSelection("manual");
   });
 
   ui.endTurnBtn.addEventListener("click", () => {
