@@ -6,3 +6,4 @@ terraform/.terraform.lock.hcl
 terraform/*.tfstate
 terraform/*.tfstate.*
 tests/artifacts/*.json
+/package-lock.json
