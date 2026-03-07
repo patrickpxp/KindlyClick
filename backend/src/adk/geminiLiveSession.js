@@ -88,6 +88,116 @@ function extractInlineData(part) {
   };
 }
 
+function parseFunctionArgs(rawArgs) {
+  if (!rawArgs) {
+    return {};
+  }
+
+  if (typeof rawArgs === "object") {
+    return rawArgs;
+  }
+
+  if (typeof rawArgs === "string") {
+    try {
+      const parsed = JSON.parse(rawArgs);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  return {};
+}
+
+function normalizeCoordinateType(rawType, x, y) {
+  const normalizedType = String(rawType || "").trim().toLowerCase();
+  if (normalizedType === "normalized" || normalizedType === "pixel") {
+    return normalizedType;
+  }
+
+  if (Number.isFinite(x) && Number.isFinite(y) && x >= 0 && x <= 1 && y >= 0 && y <= 1) {
+    return "normalized";
+  }
+
+  return "pixel";
+}
+
+function normalizeCoordinateValue(rawValue) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
+function extractFunctionCalls({ message, serverContent, parts }) {
+  const calls = [];
+
+  const ingestCall = (call) => {
+    if (!call || typeof call !== "object") {
+      return;
+    }
+
+    const name = call.name || call.functionName || call.function_name;
+    if (typeof name !== "string" || name.trim().length === 0) {
+      return;
+    }
+
+    calls.push({
+      id: call.id || call.callId || call.call_id || null,
+      name: name.trim(),
+      args: parseFunctionArgs(call.args || call.arguments || call.parameters || call.params)
+    });
+  };
+
+  const ingestCallContainer = (container) => {
+    if (!container || typeof container !== "object") {
+      return;
+    }
+
+    const functionCalls = container.functionCalls || container.function_calls;
+    if (Array.isArray(functionCalls)) {
+      functionCalls.forEach(ingestCall);
+      return;
+    }
+
+    ingestCall(container);
+  };
+
+  for (const part of parts) {
+    ingestCall(part?.functionCall || part?.function_call || null);
+  }
+
+  ingestCallContainer(message.toolCall || message.tool_call || null);
+  ingestCallContainer(serverContent?.toolCall || serverContent?.tool_call || null);
+
+  const seen = new Set();
+  return calls.filter((call) => {
+    const key = `${call.id || "none"}::${call.name}::${JSON.stringify(call.args || {})}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function isVisionDependentPrompt(lowerPrompt) {
+  if (!lowerPrompt) {
+    return false;
+  }
+
+  return (
+    lowerPrompt.includes("what do you see") ||
+    lowerPrompt.includes("can you see") ||
+    lowerPrompt.includes("on my screen") ||
+    lowerPrompt.includes("on the screen") ||
+    lowerPrompt.includes("where is") ||
+    lowerPrompt.includes("find the") ||
+    lowerPrompt.includes("highlight")
+  );
+}
+
 class GeminiLiveSession {
   constructor({ sessionId, onEvent, options, logger = console, genaiModule }) {
     this.sessionId = sessionId;
@@ -107,6 +217,16 @@ class GeminiLiveSession {
     this.pendingTextParts = [];
     this.clearBufferSentForActiveStream = false;
     this.reportedConnectionError = false;
+    this.toolCallCounter = 0;
+    this.lastVisionFrame = {
+      width: 1280,
+      height: 720
+    };
+    this.visionActive = false;
+    this.hasVisionFrame = false;
+    this.lastVisionFrameAt = null;
+    this.visionFrameTtlMs = Number(this.options.visionFrameTtlMs || 5000);
+    this.lastVisionStatusNote = null;
   }
 
   async #connect() {
@@ -143,7 +263,15 @@ class GeminiLiveSession {
           model,
           config: {
             responseModalities,
-            systemInstruction: this.options.systemPrompt
+            systemInstruction: this.options.systemPrompt,
+            tools:
+              Array.isArray(this.options.toolDeclarations) && this.options.toolDeclarations.length > 0
+                ? [
+                    {
+                      functionDeclarations: this.options.toolDeclarations
+                    }
+                  ]
+                : undefined
           },
           callbacks: {
             onopen: () => {
@@ -225,6 +353,11 @@ class GeminiLiveSession {
     return `${this.sessionId}-text-${this.responseCounter}`;
   }
 
+  #nextToolCallId() {
+    this.toolCallCounter += 1;
+    return `${this.sessionId}-tool-${this.toolCallCounter}`;
+  }
+
   #ensureActiveOutputStreamId() {
     if (!this.activeOutputStreamId) {
       this.activeOutputStreamId = this.#nextStreamId();
@@ -299,6 +432,100 @@ class GeminiLiveSession {
     this.pendingTextParts = [];
   }
 
+  #emitToolCommand(functionCall) {
+    if (!functionCall || functionCall.name !== "draw_highlight") {
+      return;
+    }
+
+    const args = functionCall.args || {};
+    const x = normalizeCoordinateValue(args.x);
+    const y = normalizeCoordinateValue(args.y);
+
+    if (x === null || y === null) {
+      return;
+    }
+
+    const sourceWidth = normalizeCoordinateValue(args.sourceWidth || args.source_width);
+    const sourceHeight = normalizeCoordinateValue(args.sourceHeight || args.source_height);
+    const coordinateType = normalizeCoordinateType(
+      args.coordinateType || args.coordinate_type,
+      x,
+      y
+    );
+
+    this.onEvent({
+      type: "tool_command",
+      command: {
+        commandId: functionCall.id || this.#nextToolCallId(),
+        toolName: "draw_highlight",
+        action: "DRAW_HIGHLIGHT",
+        status: "success",
+        args: {
+          x,
+          y,
+          coordinateType,
+          sourceWidth: sourceWidth || this.lastVisionFrame.width,
+          sourceHeight: sourceHeight || this.lastVisionFrame.height,
+          label: String(args.label || "Target")
+        }
+      }
+    });
+  }
+
+  #emitVisionUnavailable() {
+    this.#emitText(
+      "I cannot currently see your screen. Please start vision sharing so I can help with on-screen guidance."
+    );
+  }
+
+  #sendVisionStatusContextNote(active) {
+    if (this.lastVisionStatusNote === active) {
+      return;
+    }
+    this.lastVisionStatusNote = active;
+
+    const note = active
+      ? "System status update: Vision feed is available again. Use only current incoming frames for screen guidance."
+      : "System status update: Vision feed is unavailable. Do not describe current screen contents or claim visual certainty until new frames arrive.";
+
+    this.#withSession("sendClientContent(visionStatus)", (session) => {
+      session.sendClientContent({
+        turns: [
+          {
+            role: "user",
+            parts: [{ text: note }]
+          }
+        ],
+        // Context update only; do not force immediate model response.
+        turnComplete: false
+      });
+    });
+  }
+
+  #isVisionAvailable() {
+    if (!this.visionActive || !this.hasVisionFrame || !this.lastVisionFrameAt) {
+      return false;
+    }
+
+    const ageMs = Date.now() - this.lastVisionFrameAt;
+    return ageMs <= this.visionFrameTtlMs;
+  }
+
+  #refreshVisionAvailability() {
+    if (!this.visionActive || !this.lastVisionFrameAt) {
+      return;
+    }
+
+    const ageMs = Date.now() - this.lastVisionFrameAt;
+    if (ageMs <= this.visionFrameTtlMs) {
+      return;
+    }
+
+    this.visionActive = false;
+    this.lastVisionFrameAt = null;
+    this.#sendVisionStatusContextNote(false);
+  }
+
   #handleServerMessage(rawMessage) {
     const message = normalizeLiveMessage(rawMessage);
 
@@ -333,6 +560,7 @@ class GeminiLiveSession {
 
     const modelTurn = serverContent?.modelTurn || serverContent?.model_turn || null;
     const parts = Array.isArray(modelTurn?.parts) ? modelTurn.parts : [];
+    const functionCalls = extractFunctionCalls({ message, serverContent, parts });
 
     for (const part of parts) {
       if (typeof part?.text === "string" && part.text.trim().length > 0) {
@@ -365,9 +593,8 @@ class GeminiLiveSession {
       });
     }
 
-    if (typeof message.text === "string" && message.text.trim().length > 0) {
-      this.pendingTextParts.push(message.text.trim());
-    }
+    // Avoid `message.text` accessor because SDK can emit warnings for non-text parts
+    // (audio inlineData). We rely on modelTurn parts + outputTranscription instead.
 
     const outputTranscription =
       serverContent?.outputTranscription?.text ||
@@ -375,6 +602,10 @@ class GeminiLiveSession {
       null;
     if (typeof outputTranscription === "string" && outputTranscription.trim().length > 0) {
       this.pendingTextParts.push(outputTranscription.trim());
+    }
+
+    for (const functionCall of functionCalls) {
+      this.#emitToolCommand(functionCall);
     }
 
     if (serverContent?.turnComplete || serverContent?.turn_complete) {
@@ -388,6 +619,7 @@ class GeminiLiveSession {
       return;
     }
 
+    this.#refreshVisionAvailability();
     this.#handlePotentialBargeInFromInput();
 
     const audioMimeType =
@@ -432,6 +664,19 @@ class GeminiLiveSession {
     }
 
     const frameMimeType = mimeType || "image/jpeg";
+    const parsedWidth = normalizeCoordinateValue(width);
+    const parsedHeight = normalizeCoordinateValue(height);
+    if (parsedWidth && parsedHeight) {
+      this.lastVisionFrame = {
+        width: parsedWidth,
+        height: parsedHeight
+      };
+    }
+    this.visionActive = true;
+    this.hasVisionFrame = true;
+    this.lastVisionFrameAt = Date.now();
+    this.#sendVisionStatusContextNote(true);
+
     const imageBlob = {
       data: imageBytes.toString("base64"),
       mimeType: frameMimeType
@@ -455,9 +700,36 @@ class GeminiLiveSession {
     });
   }
 
+  updateVisionStatus({ active, lastFrameTs = null } = {}) {
+    this.visionActive = Boolean(active);
+    if (this.visionActive) {
+      const parsedLastFrameTs = Number(lastFrameTs);
+      if (Number.isFinite(parsedLastFrameTs)) {
+        this.lastVisionFrameAt = parsedLastFrameTs;
+        this.hasVisionFrame = true;
+      }
+      if (this.hasVisionFrame && this.lastVisionFrameAt) {
+        this.#sendVisionStatusContextNote(true);
+      }
+      return;
+    }
+
+    if (!this.visionActive) {
+      this.lastVisionFrameAt = null;
+      this.hasVisionFrame = false;
+      this.#sendVisionStatusContextNote(false);
+    }
+  }
+
   handleUserText(text) {
     const normalized = String(text || "").trim();
     if (!normalized) {
+      return;
+    }
+
+    const lowerPrompt = normalized.toLowerCase();
+    if (isVisionDependentPrompt(lowerPrompt) && !this.#isVisionAvailable()) {
+      this.#emitVisionUnavailable();
       return;
     }
 

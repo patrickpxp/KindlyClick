@@ -42,7 +42,9 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
       sessionId: null,
       userId: null,
       liveSession: null,
-      serverSeq: 0
+      serverSeq: 0,
+      visionActive: false,
+      lastVisionFrameAt: null
     };
 
     const send = (payload) => {
@@ -58,6 +60,14 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
           })
         );
       }
+    };
+
+    const truncateText = (value, maxLength = 500) => {
+      const text = String(value || "");
+      if (text.length <= maxLength) {
+        return text;
+      }
+      return `${text.slice(0, maxLength)}…`;
     };
 
     const createSessionBridge = () => {
@@ -138,6 +148,35 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
               responseId: event.responseId,
               text: event.text
             });
+            return;
+          }
+
+          if (event.type === "tool_command") {
+            const command = event.command || {};
+
+            send({
+              type: "command",
+              sessionId: state.sessionId,
+              commandId: command.commandId || null,
+              toolName: command.toolName || null,
+              action: command.action || "UNKNOWN_ACTION",
+              status: command.status || "success",
+              args: command.args || {}
+            });
+
+            sessionManager
+              .appendToolCall({
+                sessionId: state.sessionId,
+                toolName: command.toolName || "unknown_tool",
+                action: command.action || "UNKNOWN_ACTION",
+                args: command.args || {},
+                status: command.status || "success"
+              })
+              .catch((error) => {
+                logger.error(
+                  `Failed to persist tool call for session ${state.sessionId}: ${error.message}`
+                );
+              });
           }
         }
       });
@@ -164,6 +203,8 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
 
           state.sessionId = message.sessionId;
           state.userId = message.userId;
+          state.visionActive = false;
+          state.lastVisionFrameAt = null;
           createSessionBridge();
 
           send({
@@ -232,6 +273,43 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
             mockScene: message.mockScene || null,
             metadata: message.metadata || {}
           });
+          state.visionActive = true;
+          state.lastVisionFrameAt = Date.now();
+          return;
+        }
+
+        if (message.type === "vision_status") {
+          if (!state.liveSession || !state.sessionId) {
+            send({ type: "error", error: "session_start is required before vision_status" });
+            return;
+          }
+
+          if (typeof message.active !== "boolean") {
+            send({ type: "error", error: "vision_status requires boolean active" });
+            return;
+          }
+
+          state.visionActive = message.active;
+          if (message.active) {
+            state.lastVisionFrameAt = Date.now();
+          } else {
+            state.lastVisionFrameAt = null;
+          }
+
+          if (typeof state.liveSession.updateVisionStatus === "function") {
+            state.liveSession.updateVisionStatus({
+              active: message.active,
+              reason: message.reason || null,
+              lastFrameTs: message.lastFrameTs || null
+            });
+          }
+
+          send({
+            type: "vision_status_ack",
+            sessionId: state.sessionId,
+            active: state.visionActive,
+            reason: message.reason || null
+          });
           return;
         }
 
@@ -252,6 +330,31 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
 
         if (message.type === "ping") {
           send({ type: "pong" });
+          return;
+        }
+
+        if (message.type === "client_log") {
+          if (!env.acceptClientLogs) {
+            return;
+          }
+
+          const sessionId = message.sessionId || state.sessionId || null;
+          const payload = {
+            source: "extension",
+            component: String(message.component || "unknown"),
+            level: String(message.level || "info"),
+            event: String(message.event || "log"),
+            sessionId,
+            clientTs: Number(message.clientTs || 0) || null,
+            serverTs: Date.now(),
+            message: truncateText(message.message || ""),
+            data:
+              message.data && typeof message.data === "object"
+                ? message.data
+                : undefined
+          };
+
+          logger.info(`[client-log] ${JSON.stringify(payload)}`);
           return;
         }
 

@@ -9,7 +9,8 @@ Milestone 3.5 foundation for the KindlyClick Live Agent project.
 - `extension/`: Chrome extension side panel with 16kHz mono microphone capture, 1 FPS screen vision capture, and response playback.
 - `extension/src/audioController.js`: Reusable audio/session state machine used by both UI and harness tests.
 - `extension/background.js` + `extension/content.js`: Active-tab context helpers (title/url + lightweight heading/button hints) attached to vision frame metadata.
-- `tests/harness.js`: WebSocket harness that validates vision simulation plus interruption (barge-in) behavior.
+- `extension/content.js`: Also renders non-blocking `DRAW_HIGHLIGHT` laser overlays from backend tool commands.
+- `tests/harness.js`: WebSocket harness that validates vision simulation, tool loopback (`DRAW_HIGHLIGHT`), Firestore tool-call persistence, and interruption (barge-in) behavior.
 - `tests/extension_harness.js`: End-to-end extension-loop harness using scripted mic input, full controller logic, and timeline artifacts.
 
 ## Local run
@@ -61,6 +62,9 @@ If side panel mic permission is dismissed, the extension opens a helper tab
 
 Use `End Turn` to deterministically trigger an audio response while keeping mic active for barge-in.
 Use `Ask: What do you see?` to request a vision summary from the latest screen frames.
+Ask "Where is the search bar?" to trigger a `draw_highlight` tool command and render a pulsing overlay in the active tab.
+After `Stop Vision`, vision-dependent prompts return a deterministic "I cannot currently see your screen" response until vision is started again.
+Use `Log Relay: On` in the side panel to forward structured extension logs to backend stdout (`[client-log] ...` JSON lines).
 
 ## Real Gemini Live mode (Milestone 3.5)
 
@@ -90,6 +94,7 @@ If needed, you can override SDK settings:
 export GEMINI_API_VERSION="v1"
 # Optional: set false to use API key mode instead of Vertex AI.
 export GEMINI_USE_VERTEXAI=true
+export ACCEPT_CLIENT_LOGS=true
 ```
 
 ## Terraform usage

@@ -28,6 +28,34 @@ class SessionManager {
 
     return snapshot.data();
   }
+
+  async appendToolCall({ sessionId, toolName, action, args = {}, status = "success" }) {
+    const docRef = this.collection.doc(sessionId);
+    const snapshot = await docRef.get();
+    const existing = snapshot.exists ? snapshot.data() : {};
+    const toolCalls = Array.isArray(existing.toolCalls) ? existing.toolCalls : [];
+    const now = new Date().toISOString();
+
+    const nextToolCalls = toolCalls.concat([
+      {
+        toolName: String(toolName || "unknown_tool"),
+        action: String(action || "UNKNOWN_ACTION"),
+        args,
+        status,
+        ts: now
+      }
+    ]);
+
+    await docRef.set(
+      {
+        updatedAt: now,
+        toolCalls: nextToolCalls
+      },
+      { merge: true }
+    );
+
+    return nextToolCalls[nextToolCalls.length - 1];
+  }
 }
 
 module.exports = {

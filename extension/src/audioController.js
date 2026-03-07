@@ -70,6 +70,7 @@
       logFn = () => {},
       stateFn = () => {},
       traceFn = () => {},
+      commandFn = () => Promise.resolve({ ok: true }),
       nowFn = () => Date.now(),
       setTimeoutFn = (...args) => globalThis.setTimeout(...args),
       clearTimeoutFn = (...args) => globalThis.clearTimeout(...args),
@@ -85,6 +86,7 @@
       this.logFn = logFn;
       this.stateFn = stateFn;
       this.traceFn = traceFn;
+      this.commandFn = commandFn;
       this.nowFn = nowFn;
       // Timer functions can throw "Illegal invocation" if called with the wrong `this`.
       this.setTimeoutFn = (callback, delayMs) => setTimeoutFn.call(globalThis, callback, delayMs);
@@ -102,6 +104,8 @@
         responseStartTimeoutMs:
           typeof config.responseStartTimeoutMs === "number" ? config.responseStartTimeoutMs : 3000
       };
+      this.clientLogForwardingEnabled = Boolean(config.clientLogForwardingEnabled);
+      this.clientLogComponent = config.clientLogComponent || "sidepanel.audioController";
 
       this.socket = null;
       this.connected = false;
@@ -139,7 +143,8 @@
         hasGrantedMicStream: Boolean(this.grantedMicStream),
         micInfo: this.micInfo,
         activeWsUrl: this.activeWsUrl,
-        sessionId: this.sessionId
+        sessionId: this.sessionId,
+        clientLogForwardingEnabled: this.clientLogForwardingEnabled
       };
     }
 
@@ -149,6 +154,11 @@
 
     log(text) {
       this.logFn(text);
+      this.sendClientLog({
+        level: "info",
+        event: "controller_log",
+        message: text
+      });
     }
 
     trace(event) {
@@ -183,6 +193,28 @@
 
       this.trace({ direction: "out", message });
       this.socket.send(JSON.stringify(message));
+    }
+
+    setClientLogForwarding(enabled) {
+      this.clientLogForwardingEnabled = Boolean(enabled);
+      this.emitState();
+    }
+
+    sendClientLog({ level = "info", event = "log", message = "", data = undefined } = {}) {
+      if (!this.clientLogForwardingEnabled || !this.isSocketOpen()) {
+        return;
+      }
+
+      this.send({
+        type: "client_log",
+        sessionId: this.sessionId || null,
+        level,
+        event,
+        component: this.clientLogComponent,
+        message: String(message || ""),
+        data,
+        clientTs: this.nowFn()
+      });
     }
 
     sendVisionFrame({
@@ -232,6 +264,26 @@
         type: "user_text",
         sessionId: this.sessionId,
         text: normalizedText
+      });
+
+      return true;
+    }
+
+    sendVisionStatus({ active, reason = null, lastFrameTs = null } = {}) {
+      if (!this.isSocketOpen() || !this.sessionReady) {
+        return false;
+      }
+
+      if (typeof active !== "boolean") {
+        return false;
+      }
+
+      this.send({
+        type: "vision_status",
+        sessionId: this.sessionId,
+        active,
+        reason,
+        lastFrameTs
       });
 
       return true;
@@ -535,6 +587,10 @@
         return;
       }
 
+      if (message.type === "vision_status_ack") {
+        return;
+      }
+
       if (message.type === "text_output") {
         this.log(`assistant: ${message.text}`);
         return;
@@ -542,6 +598,22 @@
 
       if (message.type === "vad_event") {
         this.log(`vad_event=${message.event}`);
+        return;
+      }
+
+      if (message.type === "command") {
+        this.commandFn(message)
+          .then((result) => {
+            const action = message.action || "UNKNOWN_ACTION";
+            if (result && result.ok === false) {
+              this.log(`command failed (${action}): ${result.error || "unknown error"}`);
+              return;
+            }
+            this.log(`command executed (${action})`);
+          })
+          .catch((error) => {
+            this.log(`command dispatch error: ${error.message}`);
+          });
         return;
       }
 

@@ -7,6 +7,29 @@ async function getActiveTab() {
   return tabs && tabs.length > 0 ? tabs[0] : null;
 }
 
+function isInjectableTabUrl(url) {
+  const value = String(url || "").toLowerCase();
+  return value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://");
+}
+
+async function sendMessageWithInjectionFallback(tabId, payload) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, payload);
+  } catch (error) {
+    const errorText = String(error?.message || "");
+    if (!errorText.includes("Receiving end does not exist")) {
+      throw error;
+    }
+
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"]
+    });
+
+    return chrome.tabs.sendMessage(tabId, payload);
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     if (!message || typeof message.type !== "string") {
@@ -68,6 +91,41 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         ok: true,
         tabId: tab?.id || null
       });
+      return;
+    }
+
+    if (message.type === "kindlyclick:draw-highlight") {
+      const activeTab = await getActiveTab();
+      if (!activeTab || !activeTab.id) {
+        sendResponse({ ok: false, error: "No active tab" });
+        return;
+      }
+
+      if (!isInjectableTabUrl(activeTab.url)) {
+        sendResponse({
+          ok: false,
+          error: "Highlight works only on regular web pages (http/https/file), not browser internal pages."
+        });
+        return;
+      }
+
+      try {
+        const response = await sendMessageWithInjectionFallback(activeTab.id, {
+          type: "kindlyclick:draw-highlight",
+          command: message.command || {}
+        });
+
+        sendResponse({
+          ok: true,
+          tabId: activeTab.id,
+          result: response || { ok: true }
+        });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error.message || "Failed to draw highlight"
+        });
+      }
       return;
     }
 

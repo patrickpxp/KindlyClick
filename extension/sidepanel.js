@@ -1,5 +1,6 @@
 const TARGET_SAMPLE_RATE = 16000;
 const MIC_SELECTION_STORAGE_KEY = "kindlyclick:selectedMicDeviceId";
+const LOG_RELAY_STORAGE_KEY = "kindlyclick:logRelayEnabled";
 const VISION_CAPTURE_WIDTH = 1280;
 const VISION_CAPTURE_HEIGHT = 720;
 const VISION_CAPTURE_INTERVAL_MS = 1000;
@@ -391,6 +392,7 @@ function createUi() {
     startVisionBtn: document.getElementById("startVisionBtn"),
     stopVisionBtn: document.getElementById("stopVisionBtn"),
     askVisionBtn: document.getElementById("askVisionBtn"),
+    toggleLogRelayBtn: document.getElementById("toggleLogRelayBtn"),
     status: document.getElementById("status"),
     micInfo: document.getElementById("micInfo"),
     visionInfo: document.getElementById("visionInfo"),
@@ -441,6 +443,22 @@ function loadSelectedMicDeviceId() {
     return localStorage.getItem(MIC_SELECTION_STORAGE_KEY) || "";
   } catch (error) {
     return "";
+  }
+}
+
+function loadLogRelayEnabled() {
+  try {
+    return localStorage.getItem(LOG_RELAY_STORAGE_KEY) === "true";
+  } catch (error) {
+    return false;
+  }
+}
+
+function saveLogRelayEnabled(enabled) {
+  try {
+    localStorage.setItem(LOG_RELAY_STORAGE_KEY, enabled ? "true" : "false");
+  } catch (error) {
+    // Ignore persistence failures.
   }
 }
 
@@ -555,11 +573,46 @@ async function getActiveTabMetadata() {
   }
 }
 
+async function dispatchCommandToActiveTab(commandMessage) {
+  if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
+    return {
+      ok: false,
+      error: "chrome.runtime.sendMessage unavailable"
+    };
+  }
+
+  if (!commandMessage || commandMessage.action !== "DRAW_HIGHLIGHT") {
+    return {
+      ok: false,
+      error: `Unsupported command action: ${commandMessage?.action || "undefined"}`
+    };
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "kindlyclick:draw-highlight",
+      command: {
+        commandId: commandMessage.commandId || null,
+        action: commandMessage.action,
+        args: commandMessage.args || {}
+      }
+    });
+
+    return response || { ok: false, error: "No response from background" };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error.message || "Failed to dispatch command"
+    };
+  }
+}
+
 (function bootstrap() {
   const ui = createUi();
   const micStreamer = new MicrophoneStreamer();
   const pcmPlayer = new PcmPlayer();
   let selectedMicDeviceId = loadSelectedMicDeviceId();
+  let logRelayEnabled = loadLogRelayEnabled();
   let controllerSnapshot = {
     connected: false,
     sessionReady: false
@@ -570,6 +623,13 @@ async function getActiveTabMetadata() {
   const visionState = {
     active: false,
     frameCount: 0
+  };
+
+  const updateLogRelayUi = () => {
+    if (!ui.toggleLogRelayBtn) {
+      return;
+    }
+    ui.toggleLogRelayBtn.textContent = `Log Relay: ${logRelayEnabled ? "On" : "Off"}`;
   };
 
   const updateVisionUi = () => {
@@ -703,12 +763,35 @@ async function getActiveTabMetadata() {
         visionState.frameCount = frame.frameIndex;
       }
     },
-    onStatus: ({ active, frameIndex, reason }) => {
+    onStatus: ({ active, frameIndex, reason, lastSentAt }) => {
       visionState.active = active;
       if (typeof frameIndex === "number") {
         visionState.frameCount = frameIndex;
       }
       updateVisionUi();
+
+      if (reason === "started") {
+        const delivered = controller.sendVisionStatus({
+          active: true,
+          reason: "started",
+          lastFrameTs: lastSentAt || null
+        });
+        if (!delivered) {
+          appendLog(ui, "vision status update not sent (session not ready)");
+        }
+      }
+
+      if (!active) {
+        const delivered = controller.sendVisionStatus({
+          active: false,
+          reason,
+          lastFrameTs: lastSentAt || null
+        });
+        if (!delivered && controllerSnapshot.connected) {
+          appendLog(ui, "vision stop status not sent (session not ready)");
+        }
+      }
+
       if (reason === "screen share ended") {
         appendLog(ui, "vision capture ended by browser");
       }
@@ -745,6 +828,7 @@ async function getActiveTabMetadata() {
       clear: () => pcmPlayer.clear()
     },
     logFn: (text) => appendLog(ui, text),
+    commandFn: (commandMessage) => dispatchCommandToActiveTab(commandMessage),
     stateFn: (state) => {
       controllerSnapshot = state;
       renderState(ui, state);
@@ -756,6 +840,9 @@ async function getActiveTabMetadata() {
     },
     traceFn: () => {
       // Keep available for future diagnostics; not rendered by default.
+    },
+    config: {
+      clientLogForwardingEnabled: logRelayEnabled
     }
   });
 
@@ -852,9 +939,20 @@ async function getActiveTabMetadata() {
     }
   });
 
+  if (ui.toggleLogRelayBtn) {
+    ui.toggleLogRelayBtn.addEventListener("click", () => {
+      logRelayEnabled = !logRelayEnabled;
+      saveLogRelayEnabled(logRelayEnabled);
+      controller.setClientLogForwarding(logRelayEnabled);
+      updateLogRelayUi();
+      appendLog(ui, `log relay ${logRelayEnabled ? "enabled" : "disabled"}`);
+    });
+  }
+
   refreshMicDevices().catch((error) => {
     appendLog(ui, `initial mic list error: ${error.message}`);
   });
 
   updateVisionUi();
+  updateLogRelayUi();
 })();

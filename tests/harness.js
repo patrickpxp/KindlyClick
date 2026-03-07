@@ -363,6 +363,180 @@ async function verifyPersistedSession(sessionId) {
   if (session.sessionId !== sessionId || session.state !== "active") {
     throw new Error(`Session payload mismatch: ${JSON.stringify(session)}`);
   }
+
+  return session;
+}
+
+function assertHighlightCommandShape(commandMessage) {
+  if (!commandMessage || commandMessage.type !== "command") {
+    throw new Error(`Expected command message, received: ${JSON.stringify(commandMessage)}`);
+  }
+
+  if (commandMessage.action !== "DRAW_HIGHLIGHT") {
+    throw new Error(`Expected DRAW_HIGHLIGHT action, received: ${commandMessage.action}`);
+  }
+
+  const args = commandMessage.args || {};
+  const x = Number(args.x);
+  const y = Number(args.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new Error(`DRAW_HIGHLIGHT requires numeric x/y args: ${JSON.stringify(args)}`);
+  }
+
+  const coordinateType = String(args.coordinateType || "").toLowerCase();
+  if (coordinateType !== "normalized" && coordinateType !== "pixel") {
+    throw new Error(`Unsupported coordinateType: ${args.coordinateType}`);
+  }
+
+  if (coordinateType === "normalized") {
+    if (x < 0 || x > 1 || y < 0 || y > 1) {
+      throw new Error(`Normalized coordinates must be in [0,1], received x=${x} y=${y}`);
+    }
+  } else {
+    const sourceWidth = Number(args.sourceWidth);
+    const sourceHeight = Number(args.sourceHeight);
+    if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight)) {
+      throw new Error(`Pixel coordinates require sourceWidth/sourceHeight: ${JSON.stringify(args)}`);
+    }
+    if (x < 0 || y < 0 || x > sourceWidth || y > sourceHeight) {
+      throw new Error(
+        `Pixel coordinates out of bounds: x=${x} y=${y} source=${sourceWidth}x${sourceHeight}`
+      );
+    }
+  }
+}
+
+async function runToolLoopbackScenario(ws, sessionId) {
+  ws.send(
+    JSON.stringify({
+      type: "user_text",
+      sessionId,
+      text: "Where is the search bar?"
+    })
+  );
+
+  return new Promise((resolve, reject) => {
+    const state = {
+      assistantText: null,
+      commandMessage: null
+    };
+
+    const timeout = setTimeout(() => {
+      ws.off("message", onMessage);
+      reject(
+        new Error(
+          `Tool loopback timed out: assistantText=${Boolean(state.assistantText)} command=${Boolean(state.commandMessage)}`
+        )
+      );
+    }, 7000);
+
+    const finalizeIfReady = () => {
+      if (!state.assistantText || !state.commandMessage) {
+        return;
+      }
+
+      clearTimeout(timeout);
+      ws.off("message", onMessage);
+      assertHighlightCommandShape(state.commandMessage);
+      resolve(state);
+    };
+
+    const onMessage = (raw) => {
+      const message = JSON.parse(raw.toString());
+
+      if (
+        message.type === "text_output" &&
+        message.sessionId === sessionId &&
+        String(message.text || "").toLowerCase().includes("let me show you")
+      ) {
+        state.assistantText = message.text;
+      }
+
+      if (
+        message.type === "command" &&
+        message.sessionId === sessionId &&
+        message.action === "DRAW_HIGHLIGHT"
+      ) {
+        state.commandMessage = message;
+      }
+
+      finalizeIfReady();
+    };
+
+    ws.on("message", onMessage);
+  });
+}
+
+async function runVisionStoppedScenario(ws, sessionId) {
+  ws.send(
+    JSON.stringify({
+      type: "vision_status",
+      sessionId,
+      active: false,
+      reason: "manual_stop"
+    })
+  );
+
+  await waitForMessage(
+    ws,
+    (message) => {
+      return (
+        message.type === "vision_status_ack" &&
+        message.sessionId === sessionId &&
+        message.active === false
+      );
+    },
+    5000
+  );
+
+  ws.send(
+    JSON.stringify({
+      type: "user_text",
+      sessionId,
+      text: "What do you see?"
+    })
+  );
+
+  const answer = await waitForMessage(
+    ws,
+    (message) => message.type === "text_output" && message.sessionId === sessionId,
+    7000
+  );
+
+  const normalized = String(answer.text || "").toLowerCase();
+  if (!normalized.includes("cannot currently see your screen")) {
+    throw new Error(
+      `Expected vision unavailable response after stop. Received: ${answer.text || "<empty>"}`
+    );
+  }
+
+  return {
+    responseText: answer.text
+  };
+}
+
+async function waitForToolCallPersistence(sessionId, commandMessage, timeoutMs = 5000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const session = await verifyPersistedSession(sessionId);
+    const toolCalls = Array.isArray(session.toolCalls) ? session.toolCalls : [];
+    const persisted = toolCalls.find((toolCall) => {
+      return (
+        toolCall &&
+        toolCall.action === commandMessage.action &&
+        toolCall.toolName === (commandMessage.toolName || "draw_highlight")
+      );
+    });
+
+    if (persisted) {
+      return persisted;
+    }
+
+    await sleep(120);
+  }
+
+  throw new Error(`Timed out waiting for persisted tool call for session ${sessionId}`);
 }
 
 async function run() {
@@ -404,11 +578,21 @@ async function run() {
     await verifyPersistedSession(sessionId);
 
     const vision = await runVisionScenario(ws, sessionId);
+    const toolLoopback = await runToolLoopbackScenario(ws, sessionId);
+    const visionStopped = await runVisionStoppedScenario(ws, sessionId);
+    const persistedToolCall = await waitForToolCallPersistence(
+      sessionId,
+      toolLoopback.commandMessage
+    );
     const audio = await runInterruptionScenario(ws, sessionId, parsedWav);
 
     ws.close();
 
     console.log(`Harness vision check passed: ${vision.responseText}`);
+    console.log(
+      `Harness tool loopback passed: action=${toolLoopback.commandMessage.action} x=${toolLoopback.commandMessage.args.x} y=${toolLoopback.commandMessage.args.y} status=${persistedToolCall.status}`
+    );
+    console.log(`Harness vision stop guard passed: ${visionStopped.responseText}`);
     console.log(
       `Harness audio barge-in passed: firstStreamChunks=${audio.firstStreamChunks}, secondStreamChunks=${audio.secondStreamChunks}`
     );

@@ -98,6 +98,22 @@ function inferSceneKey({ mockScene, metadata = {}, imageBase64 = "" }) {
   return "unknown";
 }
 
+function isVisionDependentPrompt(lowerPrompt) {
+  if (!lowerPrompt) {
+    return false;
+  }
+
+  return (
+    lowerPrompt.includes("what do you see") ||
+    lowerPrompt.includes("can you see") ||
+    lowerPrompt.includes("on my screen") ||
+    lowerPrompt.includes("on the screen") ||
+    lowerPrompt.includes("where is") ||
+    lowerPrompt.includes("find the") ||
+    lowerPrompt.includes("highlight")
+  );
+}
+
 class MockLiveSession {
   constructor({ sessionId, onEvent, options }) {
     this.sessionId = sessionId;
@@ -111,6 +127,10 @@ class MockLiveSession {
 
     this.visionFrames = [];
     this.textResponseCounter = 0;
+    this.toolCallCounter = 0;
+    this.visionActive = false;
+    this.lastVisionFrameAt = null;
+    this.visionFrameTtlMs = Number(options.visionFrameTtlMs || 5000);
   }
 
   ingestAudioChunk(audioBuffer) {
@@ -166,6 +186,8 @@ class MockLiveSession {
     const sceneKey = inferSceneKey({ mockScene, metadata, imageBase64 });
     const scene = SCENE_MAP[sceneKey] || SCENE_MAP.unknown;
 
+    const receivedAt = Date.now();
+
     this.visionFrames.push({
       sceneKey,
       sceneLabel: scene.label,
@@ -175,12 +197,15 @@ class MockLiveSession {
       height: height || null,
       frameIndex: frameIndex || null,
       metadata,
-      receivedAt: Date.now()
+      receivedAt
     });
 
     if (this.visionFrames.length > MAX_VISION_FRAMES) {
       this.visionFrames.shift();
     }
+
+    this.visionActive = true;
+    this.lastVisionFrameAt = receivedAt;
 
     this.onEvent({
       type: "vision_input_ack",
@@ -191,6 +216,16 @@ class MockLiveSession {
     });
   }
 
+  updateVisionStatus({ active } = {}) {
+    this.visionActive = Boolean(active);
+
+    if (!this.visionActive) {
+      // Do not retain stale frames once sharing stops.
+      this.visionFrames = [];
+      this.lastVisionFrameAt = null;
+    }
+  }
+
   handleUserText(text) {
     const prompt = String(text || "").trim();
     if (!prompt) {
@@ -199,11 +234,40 @@ class MockLiveSession {
 
     const lowerPrompt = prompt.toLowerCase();
 
+    if (isVisionDependentPrompt(lowerPrompt) && !this.#isVisionAvailable()) {
+      this.onEvent({
+        type: "text_output",
+        responseId: this.#nextResponseId(),
+        text: "I cannot currently see your screen. Please start vision sharing so I can help with on-screen guidance."
+      });
+      return;
+    }
+
     if (lowerPrompt.includes("what do you see")) {
       this.onEvent({
         type: "text_output",
         responseId: this.#nextResponseId(),
         text: this.#summarizeVisionFrames()
+      });
+      return;
+    }
+
+    if (
+      (lowerPrompt.includes("where") || lowerPrompt.includes("show")) &&
+      (lowerPrompt.includes("search") || lowerPrompt.includes("bar"))
+    ) {
+      const command = this.#buildDrawHighlightCommand({
+        label: "Search bar"
+      });
+
+      this.onEvent({
+        type: "text_output",
+        responseId: this.#nextResponseId(),
+        text: "Let me show you. I highlighted the search bar area on your screen."
+      });
+      this.onEvent({
+        type: "tool_command",
+        command
       });
       return;
     }
@@ -217,7 +281,7 @@ class MockLiveSession {
 
   #summarizeVisionFrames() {
     if (this.visionFrames.length === 0) {
-      return "I do not see any screen frames yet. Please share your screen and send a frame.";
+      return "I cannot currently see your screen. Please start vision sharing so I can help with on-screen guidance.";
     }
 
     const recentFrames = this.visionFrames.slice(-3);
@@ -233,9 +297,50 @@ class MockLiveSession {
     return `${lines.join(" ")} Key elements I can identify: ${aggregateElements}.`;
   }
 
+  #isVisionAvailable() {
+    if (!this.visionActive || !this.lastVisionFrameAt) {
+      return false;
+    }
+
+    if (this.visionFrames.length === 0) {
+      return false;
+    }
+
+    const ageMs = Date.now() - this.lastVisionFrameAt;
+    return ageMs <= this.visionFrameTtlMs;
+  }
+
   #nextResponseId() {
     this.textResponseCounter += 1;
     return `${this.sessionId}-text-${this.textResponseCounter}`;
+  }
+
+  #nextToolCallId() {
+    this.toolCallCounter += 1;
+    return `${this.sessionId}-tool-${this.toolCallCounter}`;
+  }
+
+  #buildDrawHighlightCommand({ label = "Target" } = {}) {
+    const latestFrame = this.visionFrames.length > 0 ? this.visionFrames[this.visionFrames.length - 1] : null;
+    const sourceWidth = Number(latestFrame?.width) > 0 ? Number(latestFrame.width) : 1280;
+    const sourceHeight = Number(latestFrame?.height) > 0 ? Number(latestFrame.height) : 720;
+    const x = 0.5;
+    const y = 0.12;
+
+    return {
+      commandId: this.#nextToolCallId(),
+      toolName: "draw_highlight",
+      action: "DRAW_HIGHLIGHT",
+      status: "success",
+      args: {
+        x,
+        y,
+        coordinateType: "normalized",
+        sourceWidth,
+        sourceHeight,
+        label
+      }
+    };
   }
 
   #beginResponseStream() {
@@ -291,6 +396,8 @@ class MockLiveSession {
     this.#stopActiveStream();
     this.pendingAudioBytes = 0;
     this.visionFrames = [];
+    this.visionActive = false;
+    this.lastVisionFrameAt = null;
   }
 }
 

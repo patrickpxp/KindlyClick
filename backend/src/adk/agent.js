@@ -5,6 +5,39 @@ const {
   DEFAULT_OUTPUT_SAMPLE_RATE_HZ
 } = require("./geminiLiveSession");
 
+function buildToolDeclarations() {
+  return [
+    {
+      name: "draw_highlight",
+      description:
+        "Highlight a UI element on the user's page. Use normalized coordinates for stable scaling.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          x: {
+            type: "NUMBER",
+            description: "Horizontal position. Prefer normalized values between 0.0 and 1.0."
+          },
+          y: {
+            type: "NUMBER",
+            description: "Vertical position. Prefer normalized values between 0.0 and 1.0."
+          },
+          coordinate_type: {
+            type: "STRING",
+            enum: ["normalized", "pixel"],
+            description: "Coordinate space of x/y values."
+          },
+          label: {
+            type: "STRING",
+            description: "Optional short label shown near the highlight."
+          }
+        },
+        required: ["x", "y"]
+      }
+    }
+  ];
+}
+
 function buildRunnerConfig(env) {
   return {
     modalities: ["audio", "vision"],
@@ -13,8 +46,9 @@ function buildRunnerConfig(env) {
     fallbackModels: env.geminiLiveFallbackModels,
     gcpProjectId: env.gcpProjectId,
     gcpLocation: env.gcpLocation,
+    toolDeclarations: buildToolDeclarations(),
     systemPrompt:
-      "You are KindlyClick. You can hear the user and see their screen frames. Guide them step-by-step using spatial language and patience."
+      "You are KindlyClick. You can hear the user and see their screen frames. Guide them step-by-step using spatial language and patience. When pointing to something, call draw_highlight with normalized coordinates."
   };
 }
 
@@ -66,10 +100,12 @@ function createLiveSession({ adkState, env, sessionId, onEvent, logger = console
           useVertexAi: env.geminiUseVertexAi,
           apiKey: env.geminiApiKey,
           vadMode: env.vadMode,
+          visionFrameTtlMs: env.visionFrameTtlMs,
           inputSampleRateHz: DEFAULT_INPUT_SAMPLE_RATE_HZ,
           outputSampleRateHz: DEFAULT_OUTPUT_SAMPLE_RATE_HZ,
           audioInputMimeType: `audio/pcm;rate=${DEFAULT_INPUT_SAMPLE_RATE_HZ}`,
-          systemPrompt: runnerConfig.systemPrompt
+          systemPrompt: runnerConfig.systemPrompt,
+          toolDeclarations: runnerConfig.toolDeclarations
         }
       });
     }
@@ -80,6 +116,7 @@ function createLiveSession({ adkState, env, sessionId, onEvent, logger = console
     onEvent,
     options: {
       vadMode: env.vadMode,
+      visionFrameTtlMs: env.visionFrameTtlMs,
       vadSilenceMs: env.mockVadSilenceMs,
       responseIntervalMs: env.mockResponseIntervalMs,
       responseChunks: env.mockResponseChunks
@@ -90,5 +127,6 @@ function createLiveSession({ adkState, env, sessionId, onEvent, logger = console
 module.exports = {
   initializeAdkConnection,
   createLiveSession,
-  buildRunnerConfig
+  buildRunnerConfig,
+  buildToolDeclarations
 };
