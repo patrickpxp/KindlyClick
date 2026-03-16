@@ -1,25 +1,67 @@
 # KindlyClick
 
-Milestone 3.5 foundation for the KindlyClick Live Agent project.
+KindlyClick is a voice-first Chrome extension that helps seniors and other low-confidence computer users navigate websites in real time. The user opens the side panel, asks for help out loud, shares the current screen, and receives spoken guidance from an AI assistant that can also point to UI elements on the page.
 
-## Structure
+This repository is a hackathon submission focused on live multimodal assistance: microphone input, screen understanding, streamed voice responses, and lightweight visual guidance.
 
-- `backend/`: Node.js backend with WebSocket session management, audio streaming, vision frame ingestion, barge-in signaling, and optional real Gemini Live wiring.
-- `terraform/`: Infrastructure-as-code for APIs, Firestore Native DB, Artifact Registry, backend IAM, and optional Cloud Run deployment.
-- `scripts/deploy_backend.sh`: End-to-end production deploy helper for infra bootstrap, image build/push, and Cloud Run rollout.
-- `extension/`: Chrome extension with a help-first side panel, onboarding page, offscreen runtime host, 16kHz mono microphone capture, 1 FPS screen vision capture, and response playback.
-- `extension/src/audioController.js`: Reusable audio/session state machine used by both UI and harness tests.
-- `extension/src/runtimeProtocol.js`: Shared protocol normalization and validation for extension-runtime and backend WebSocket messages.
-- `extension/background.js` + `extension/content.js`: Active-tab context helpers (title/url + lightweight heading/button hints) attached to vision frame metadata.
-- `extension/content.js`: Also renders non-blocking `DRAW_HIGHLIGHT` laser overlays from backend tool commands.
-- `extension/onboarding.html` + `extension/onboarding.js`: First-run page that explains pinning and opens the side panel.
-- `tests/harness.js`: WebSocket harness that validates vision simulation, tool loopback (`DRAW_HIGHLIGHT`), Firestore tool-call persistence, and interruption (barge-in) behavior.
-- `tests/extension_harness.js`: End-to-end extension-loop harness using scripted mic input, full controller logic, and timeline artifacts.
-- `tests/runtime_protocol_harness.js`: Targeted harness for runtime-bridge and backend message schema validation.
+## Why This App Exists
 
-## Google Cloud Architecture
+Many people struggle with modern web interfaces because they do not know:
 
-Canonical Mermaid source: `docs/google-cloud-architecture.mmd`
+- what on the page is important
+- where to click next
+- whether the page reacted correctly
+- how to describe what they are seeing in technical terms
+
+KindlyClick is designed to reduce that friction. Instead of requiring the user to read interface labels or understand browser conventions, the app behaves like a patient remote helper that can listen, look at the page, and guide the user step by step.
+
+## What KindlyClick Does
+
+- listens to the user through the microphone
+- looks at the current shared tab or window
+- streams both inputs to a live backend session
+- replies with spoken guidance
+- can visually highlight where to click on the page
+- supports interruption so the user can speak over the assistant
+
+## How To Use It
+
+### User flow
+
+1. Open the KindlyClick Chrome side panel.
+2. Press `Call for help`.
+3. Allow microphone access if prompted.
+4. Share the current tab or window when prompted.
+5. Ask for help naturally, for example:
+   - "Where is the search bar?"
+   - "How do I send this email?"
+   - "What should I click next?"
+
+The assistant will respond by voice and, when useful, highlight elements on the page.
+
+### Current backend endpoint
+
+The extension now defaults to the deployed backend:
+
+```text
+wss://kindlyclick-backend-cafvgv56ka-uc.a.run.app/ws
+```
+
+If your extension has an older saved backend URL in local storage, open the `Advanced` tab and update the `Backend WebSocket URL` field manually once.
+
+### Manual extension setup
+
+This project does not include Chrome Web Store publishing. To run it:
+
+1. Open `chrome://extensions`
+2. Enable `Developer mode`
+3. Choose `Load unpacked`
+4. Select the [extension](extension) folder
+5. Open the KindlyClick side panel from the toolbar
+
+## Architecture
+
+Canonical Mermaid source: [docs/google-cloud-architecture.mmd](docs/google-cloud-architecture.mmd)
 
 ```mermaid
 flowchart LR
@@ -45,159 +87,116 @@ flowchart LR
     Registry -- "deploy container image" --> Run
 ```
 
-## Local run
+### Runtime architecture
 
-1. Install backend dependencies:
+- The Chrome extension provides the user interface, microphone capture, screen capture, playback, and page highlight overlay.
+- An offscreen extension runtime owns the live session so the side panel is only a control surface.
+- The backend is a Node.js WebSocket service deployed on Cloud Run.
+- The backend streams audio and vision input into Gemini Live on Vertex AI.
+- Session metadata and tool calls are persisted in Firestore.
+- Cloud Build builds the container image and pushes it to Artifact Registry for Cloud Run deployment.
+
+## Tech Stack
+
+### Frontend and extension
+
+- Chrome Extension Manifest V3
+- JavaScript
+- Web Audio API
+- `getDisplayMedia` screen capture
+- content scripts for on-page overlays
+
+### Backend
+
+- Node.js
+- WebSocket server via `ws`
+- Google GenAI SDK / Gemini Live integration
+- Firestore client
+
+### Google Cloud
+
+- Cloud Run
+- Vertex AI
+- Firestore
+- Artifact Registry
+- Cloud Build
+- IAM service accounts
+- Terraform
+
+## Repository Map
+
+- [extension](extension): Chrome extension UI, offscreen runtime, background worker, and content scripts
+- [backend](backend): WebSocket backend, Gemini session adapters, Firestore integration
+- [terraform](terraform): infrastructure for Firestore, Artifact Registry, IAM, and Cloud Run
+- [tests](tests): protocol and extension harnesses
+- [scripts/deploy_backend.sh](scripts/deploy_backend.sh): backend deployment helper
+- [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md): deeper technical briefing
+- [PRODUCT_SPEC.md](PRODUCT_SPEC.md): original product framing
+
+## Local Development
+
+### Backend in mock mode
 
 ```bash
 cd backend
 npm install
-```
-
-2. Start the backend in mock mode (use any free local port):
-
-```bash
 PORT=8091 npm start
 ```
 
-3. In another shell, run backend protocol harness (vision + audio):
+### Backend with real Gemini Live
 
 ```bash
-HARNESS_PORT=8092 node tests/harness.js
-```
+cd kindlyclick
+set -a
+source .env
+set +a
 
-4. Run extension-loop harness (no manual browser interaction):
-
-```bash
-EXT_HARNESS_PORT=8093 node tests/extension_harness.js
-```
-
-This generates `tests/artifacts/extension_timeline.json` with ordered in/out WS events and controller logs.
-
-5. To test the extension manually:
-
-```bash
-# Load extension/ as an unpacked extension in Chrome.
-# Click the KindlyClick toolbar icon to open the side panel.
-# On a real install, KindlyClick also opens a first-run onboarding page
-# with a large "Open KindlyClick" button.
-ws://127.0.0.1:8091/ws
-```
-
-6. Side panel interaction flow:
-
-```bash
-Call for help
-  -> connect runtime
-  -> start microphone
-  -> start screen sharing (share current tab/window when prompted)
-```
-
-The default panel is intentionally simple:
-
-- one large `Call for help` button
-- plain-language status text
-- an animated progress card during startup
-- a `Stop AI help` state once connection, microphone, and vision are all live
-
-The older detailed controls still exist under the `Advanced` tab.
-
-If microphone permission is dismissed, the extension opens a helper tab
-(`request-mic.html`) so the user can grant microphone access there; the runtime then retries microphone start automatically.
-
-Use `End Turn` to deterministically trigger an audio response while keeping mic active for barge-in.
-Use `Ask: What do you see?` to request a vision summary from the latest screen frames.
-Ask "Where is the search bar?" to trigger a `draw_highlight` tool command and render a pulsing overlay in the active tab.
-After `Stop Vision`, vision-dependent prompts return a deterministic "I cannot currently see your screen" response until vision is started again.
-Use `Log Relay: On` in the side panel to forward structured extension logs to backend stdout (`[client-log] ...` JSON lines).
-
-If the browser ends screen sharing, KindlyClick now shuts down the whole help session:
-
-- vision stops
-- microphone stops
-- backend connection disconnects
-- the panel returns to its idle first-run state
-
-## Real Gemini Live mode (Milestone 3.5)
-
-The backend defaults to deterministic mock mode.
-
-To run against Gemini Live on Vertex AI:
-
-```bash
 export ENABLE_REAL_GEMINI_LIVE=true
 export GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID"
 export GOOGLE_CLOUD_LOCATION="us-central1"
-# Current Vertex Live default:
 export GEMINI_LIVE_MODEL="gemini-live-2.5-flash-native-audio"
-# Optional fallback chain (comma-separated):
 export GEMINI_LIVE_FALLBACK_MODELS="gemini-live-2.5-flash-preview-native-audio-09-2025,gemini-2.0-flash-live-preview-04-09"
-```
+export GEMINI_USE_VERTEXAI=true
+export ACCEPT_CLIENT_LOGS=true
 
-Then start the backend:
-
-```bash
 HOST=0.0.0.0 PORT=8091 npm --prefix backend start
 ```
 
-If needed, you can override SDK settings:
+### Harness tests
 
 ```bash
-export GEMINI_API_VERSION="v1"
-# Optional: set false to use API key mode instead of Vertex AI.
-export GEMINI_USE_VERTEXAI=true
-export ACCEPT_CLIENT_LOGS=true
+HARNESS_PORT=8092 node tests/harness.js
+EXT_HARNESS_PORT=8093 node tests/extension_harness.js
+node tests/runtime_protocol_harness.js
 ```
 
-## Terraform usage
+## Backend Deployment
 
-```bash
-cd terraform
-terraform init
-terraform plan -var="project_id=YOUR_PROJECT_ID"
-```
+The backend is deployed to Cloud Run. Chrome extension publishing is intentionally out of scope for this repo.
 
-Do not run `terraform apply` until project-level settings and billing are confirmed.
-
-## Production backend deploy
-
-Chrome extension publishing is intentionally out of scope here. The production deploy target is the backend service on Cloud Run.
+### One-command deploy
 
 Prerequisites:
 
-- `gcloud` authenticated to the correct project
+- `gcloud` authenticated to the target project
 - `terraform` installed locally
 - billing enabled on the GCP project
 - `.env` contains `GCP_PROJECT_ID`
 
-One-command deploy:
+Run:
 
 ```bash
 ./scripts/deploy_backend.sh
 ```
 
-What it does:
+The script:
 
-- enables required GCP APIs
-- provisions Firestore, Artifact Registry, and the backend runtime service account
-- builds the root `Dockerfile` with Cloud Build and pushes the backend image
-- deploys a public Cloud Run service with Gemini Live + Vertex AI env configured
+- enables required Google Cloud APIs
+- provisions Firestore, Artifact Registry, and IAM
+- builds the container with Cloud Build
+- deploys the backend to Cloud Run
 
-Useful overrides:
-
-```bash
-IMAGE_TAG=manual-20260316 ./scripts/deploy_backend.sh
-SERVICE_NAME=kindlyclick-backend-staging ./scripts/deploy_backend.sh
-GOOGLE_CLOUD_LOCATION=us-central1 ./scripts/deploy_backend.sh
-```
-
-After deploy, point the extension side panel WebSocket URL at:
-
-```text
-wss://YOUR_CLOUD_RUN_HOST/ws
-```
-
-Manual Terraform flow is still available if you want tighter control:
+### Manual deploy
 
 ```bash
 cd terraform
@@ -208,3 +207,23 @@ terraform apply \
   -var="deploy_cloud_run_service=true" \
   -var="container_image=us-central1-docker.pkg.dev/YOUR_PROJECT_ID/kindlyclick/backend:TAG"
 ```
+
+## Notable Hackathon Features
+
+- Live multimodal interaction with audio and screen input
+- Voice barge-in handling
+- Help-first side panel UX
+- Visual on-page highlight tool
+- Cloud-native backend deployment
+- Test harnesses for backend protocol and extension controller behavior
+
+## Current Limitations
+
+- The extension is loaded unpacked; Chrome Web Store distribution is not included.
+- Page understanding is based on shared frames plus lightweight page metadata, not full DOM or accessibility-tree streaming.
+- Persistence is intentionally minimal and focused on sessions and tool calls.
+- The product is optimized for browser guidance, not arbitrary desktop automation.
+
+## Submission Summary
+
+KindlyClick turns a browser session into a live, assistive conversation. The user does not need to know what a button is called or how a site is structured. They ask for help naturally, the assistant sees the page, answers by voice, and can point directly at the right place on screen.
