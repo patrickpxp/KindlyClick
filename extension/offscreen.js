@@ -5,7 +5,8 @@ const VISION_CAPTURE_INTERVAL_MS = 1000;
 const VISION_JPEG_QUALITY = 0.6;
 const MIC_WORKLET_NAME = "kindlyclick-mic-capture";
 const MIC_WORKLET_PATH = "micCaptureWorklet.js";
-const OFFSCREEN_RUNTIME_TARGET = "kindlyclick-offscreen-runtime";
+const runtimeProtocol = window.KindlyClickRuntimeProtocol;
+const OFFSCREEN_RUNTIME_TARGET = runtimeProtocol.OFFSCREEN_RUNTIME_TARGET;
 
 class MicrophoneStreamer {
   constructor() {
@@ -529,19 +530,21 @@ async function openMicPermissionTab(deviceId) {
   let helperRetryInFlight = false;
   let micPermissionPollIntervalId = null;
   let pendingMicDeviceId = "";
+  let shutdownAfterVisionEndedInFlight = false;
   const visionState = {
     active: false,
     frameCount: 0
   };
 
   const updateControllerSnapshot = (snapshot) => {
-    controllerSnapshot = snapshot;
-    emitRuntimeState(snapshot);
+    controllerSnapshot = runtimeProtocol.normalizeRuntimeStateSnapshot(snapshot);
+    emitRuntimeState(controllerSnapshot);
   };
 
   const updateVisionState = (nextState) => {
-    visionState.active = Boolean(nextState.active);
-    visionState.frameCount = Number(nextState.frameCount) || 0;
+    const normalizedVisionState = runtimeProtocol.normalizeVisionStateSnapshot(nextState);
+    visionState.active = normalizedVisionState.active;
+    visionState.frameCount = normalizedVisionState.frameCount;
     emitVisionState(visionState);
   };
 
@@ -552,6 +555,27 @@ async function openMicPermissionTab(deviceId) {
 
     clearInterval(micPermissionPollIntervalId);
     micPermissionPollIntervalId = null;
+  }
+
+  async function shutdownAfterVisionEnded() {
+    if (shutdownAfterVisionEndedInFlight) {
+      return;
+    }
+
+    shutdownAfterVisionEndedInFlight = true;
+
+    try {
+      awaitingMicPermissionHelper = false;
+      stopMicPermissionPolling();
+      pendingMicDeviceId = "";
+
+      if (controllerSnapshot.connected || controllerSnapshot.connecting || controllerSnapshot.sessionReady) {
+        emitRuntimeLog("screen sharing ended, stopping AI help");
+        await controller.disconnect();
+      }
+    } finally {
+      shutdownAfterVisionEndedInFlight = false;
+    }
   }
 
   async function startMicWithCurrentSelection(
@@ -684,6 +708,9 @@ async function openMicPermissionTab(deviceId) {
 
       if (reason === "screen share ended") {
         emitRuntimeLog("vision capture ended by browser");
+        shutdownAfterVisionEnded().catch((error) => {
+          emitRuntimeLog(`disconnect after screen share end failed: ${error.message}`);
+        });
       }
     }
   });
@@ -759,25 +786,30 @@ async function openMicPermissionTab(deviceId) {
       return undefined;
     }
 
-    if (
-      message.type !== "kindlyclick:offscreen-command" ||
-      message.target !== OFFSCREEN_RUNTIME_TARGET
-    ) {
+    if (message.type !== "kindlyclick:offscreen-command") {
       return undefined;
     }
 
+    const parsed = runtimeProtocol.parseOffscreenCommandMessage(message);
+    if (!parsed.ok) {
+      sendResponse({ ok: false, error: parsed.error });
+      return true;
+    }
+
+    const runtimeCommand = parsed.value;
+
     Promise.resolve()
       .then(async () => {
-        if (message.command === "connect") {
-          if (typeof message.logRelayEnabled === "boolean") {
-            controller.setClientLogForwarding(message.logRelayEnabled);
+        if (runtimeCommand.command === "connect") {
+          if (typeof runtimeCommand.logRelayEnabled === "boolean") {
+            controller.setClientLogForwarding(runtimeCommand.logRelayEnabled);
           }
-          controller.connect(message.wsUrl || "");
+          controller.connect(runtimeCommand.wsUrl);
           sendResponse({ ok: true });
           return;
         }
 
-        if (message.command === "disconnect") {
+        if (runtimeCommand.command === "disconnect") {
           awaitingMicPermissionHelper = false;
           stopMicPermissionPolling();
           if (visionLoop.isActive()) {
@@ -788,31 +820,31 @@ async function openMicPermissionTab(deviceId) {
           return;
         }
 
-        if (message.command === "set-log-relay") {
-          controller.setClientLogForwarding(Boolean(message.enabled));
+        if (runtimeCommand.command === "set-log-relay") {
+          controller.setClientLogForwarding(runtimeCommand.enabled);
           sendResponse({ ok: true });
           return;
         }
 
-        if (message.command === "start-mic") {
-          await startMicWithCurrentSelection(message.deviceId || "", "manual");
+        if (runtimeCommand.command === "start-mic") {
+          await startMicWithCurrentSelection(runtimeCommand.deviceId, "manual");
           sendResponse({ ok: true });
           return;
         }
 
-        if (message.command === "stop-mic") {
+        if (runtimeCommand.command === "stop-mic") {
           await controller.stopMicrophone();
           sendResponse({ ok: true });
           return;
         }
 
-        if (message.command === "end-turn") {
+        if (runtimeCommand.command === "end-turn") {
           controller.endCurrentUtterance("manual end turn");
           sendResponse({ ok: true });
           return;
         }
 
-        if (message.command === "start-vision") {
+        if (runtimeCommand.command === "start-vision") {
           if (!controllerSnapshot.connected || !controllerSnapshot.sessionReady) {
             sendResponse({ ok: false, error: "Connect session first" });
             return;
@@ -824,14 +856,14 @@ async function openMicPermissionTab(deviceId) {
           return;
         }
 
-        if (message.command === "stop-vision") {
+        if (runtimeCommand.command === "stop-vision") {
           await visionLoop.stop("manual stop");
           emitRuntimeLog("vision capture stopped");
           sendResponse({ ok: true });
           return;
         }
 
-        if (message.command === "ask-vision") {
+        if (runtimeCommand.command === "ask-vision") {
           const delivered = controller.sendUserText("What do you see?");
           if (!delivered) {
             sendResponse({ ok: false, error: "vision question not sent: connect session first" });
@@ -844,7 +876,7 @@ async function openMicPermissionTab(deviceId) {
 
         sendResponse({
           ok: false,
-          error: `Unsupported runtime command: ${message.command || "undefined"}`
+          error: `Unsupported runtime command: ${runtimeCommand.command || "undefined"}`
         });
       })
       .catch((error) => {

@@ -5,6 +5,7 @@ const { loadEnv } = require("./config/env");
 const { createFirestoreClient } = require("./firestore/client");
 const { SessionManager } = require("./sessions/sessionManager");
 const { initializeAdkConnection, createLiveSession } = require("./adk/agent");
+const runtimeProtocol = require("../../extension/src/runtimeProtocol");
 
 function createHttpHandler(sessionManager) {
   return async (req, res) => {
@@ -196,17 +197,21 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
 
     socket.on("message", async (raw) => {
       try {
-        const message = JSON.parse(raw.toString());
+        const parsedMessage = runtimeProtocol.parseBackendClientMessage(
+          JSON.parse(raw.toString())
+        );
+        if (!parsedMessage.ok) {
+          send({
+            type: "error",
+            error: "Invalid message",
+            details: parsedMessage.error
+          });
+          return;
+        }
+
+        const message = parsedMessage.value;
 
         if (message.type === "session_start") {
-          if (!message.sessionId || !message.userId) {
-            send({
-              type: "error",
-              error: "session_start requires sessionId and userId"
-            });
-            return;
-          }
-
           await sessionManager.startSession({
             sessionId: message.sessionId,
             userId: message.userId,
@@ -231,11 +236,6 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
         if (message.type === "audio_input") {
           if (!state.liveSession || !state.sessionId) {
             send({ type: "error", error: "session_start is required before audio_input" });
-            return;
-          }
-
-          if (typeof message.pcm16Base64 !== "string" || message.pcm16Base64.length === 0) {
-            send({ type: "error", error: "audio_input requires pcm16Base64" });
             return;
           }
 
@@ -266,16 +266,6 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
             return;
           }
 
-          if (message.modality !== "vision") {
-            send({ type: "error", error: "realtime_input currently supports only modality=vision" });
-            return;
-          }
-
-          if (typeof message.imageBase64 !== "string" || message.imageBase64.length === 0) {
-            send({ type: "error", error: "realtime_input requires imageBase64" });
-            return;
-          }
-
           state.liveSession.ingestVisionFrame({
             imageBase64: message.imageBase64,
             mimeType: message.mimeType || "image/jpeg",
@@ -293,11 +283,6 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
         if (message.type === "vision_status") {
           if (!state.liveSession || !state.sessionId) {
             send({ type: "error", error: "session_start is required before vision_status" });
-            return;
-          }
-
-          if (typeof message.active !== "boolean") {
-            send({ type: "error", error: "vision_status requires boolean active" });
             return;
           }
 
@@ -328,11 +313,6 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
         if (message.type === "user_text") {
           if (!state.liveSession || !state.sessionId) {
             send({ type: "error", error: "session_start is required before user_text" });
-            return;
-          }
-
-          if (typeof message.text !== "string" || message.text.trim().length === 0) {
-            send({ type: "error", error: "user_text requires text" });
             return;
           }
 

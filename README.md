@@ -6,12 +6,15 @@ Milestone 3.5 foundation for the KindlyClick Live Agent project.
 
 - `backend/`: Node.js backend with WebSocket session management, audio streaming, vision frame ingestion, barge-in signaling, and optional real Gemini Live wiring.
 - `terraform/`: Infrastructure-as-code for APIs, Firestore Native DB, and Cloud Run placeholder service.
-- `extension/`: Chrome extension side panel with 16kHz mono microphone capture, 1 FPS screen vision capture, and response playback.
+- `extension/`: Chrome extension with a help-first side panel, onboarding page, offscreen runtime host, 16kHz mono microphone capture, 1 FPS screen vision capture, and response playback.
 - `extension/src/audioController.js`: Reusable audio/session state machine used by both UI and harness tests.
+- `extension/src/runtimeProtocol.js`: Shared protocol normalization and validation for extension-runtime and backend WebSocket messages.
 - `extension/background.js` + `extension/content.js`: Active-tab context helpers (title/url + lightweight heading/button hints) attached to vision frame metadata.
 - `extension/content.js`: Also renders non-blocking `DRAW_HIGHLIGHT` laser overlays from backend tool commands.
+- `extension/onboarding.html` + `extension/onboarding.js`: First-run page that explains pinning and opens the side panel.
 - `tests/harness.js`: WebSocket harness that validates vision simulation, tool loopback (`DRAW_HIGHLIGHT`), Firestore tool-call persistence, and interruption (barge-in) behavior.
 - `tests/extension_harness.js`: End-to-end extension-loop harness using scripted mic input, full controller logic, and timeline artifacts.
+- `tests/runtime_protocol_harness.js`: Targeted harness for runtime-bridge and backend message schema validation.
 
 ## Local run
 
@@ -46,25 +49,45 @@ This generates `tests/artifacts/extension_timeline.json` with ordered in/out WS 
 
 ```bash
 # Load extension/ as an unpacked extension in Chrome.
-# Open the KindlyClick side panel and set the URL, e.g.:
+# Click the KindlyClick toolbar icon to open the side panel.
+# On a real install, KindlyClick also opens a first-run onboarding page
+# with a large "Open KindlyClick" button.
 ws://127.0.0.1:8091/ws
 ```
 
 6. Side panel interaction flow:
 
 ```bash
-Connect -> Start Mic
-Connect -> Start Vision (share current tab/window when prompted)
+Call for help
+  -> connect runtime
+  -> start microphone
+  -> start screen sharing (share current tab/window when prompted)
 ```
 
-If side panel mic permission is dismissed, the extension opens a helper tab
-(`request-mic.html`) so the user can grant microphone access there; the side panel then retries `Start Mic` automatically.
+The default panel is intentionally simple:
+
+- one large `Call for help` button
+- plain-language status text
+- an animated progress card during startup
+- a `Stop AI help` state once connection, microphone, and vision are all live
+
+The older detailed controls still exist under the `Advanced` tab.
+
+If microphone permission is dismissed, the extension opens a helper tab
+(`request-mic.html`) so the user can grant microphone access there; the runtime then retries microphone start automatically.
 
 Use `End Turn` to deterministically trigger an audio response while keeping mic active for barge-in.
 Use `Ask: What do you see?` to request a vision summary from the latest screen frames.
 Ask "Where is the search bar?" to trigger a `draw_highlight` tool command and render a pulsing overlay in the active tab.
 After `Stop Vision`, vision-dependent prompts return a deterministic "I cannot currently see your screen" response until vision is started again.
 Use `Log Relay: On` in the side panel to forward structured extension logs to backend stdout (`[client-log] ...` JSON lines).
+
+If the browser ends screen sharing, KindlyClick now shuts down the whole help session:
+
+- vision stops
+- microphone stops
+- backend connection disconnects
+- the panel returns to its idle first-run state
 
 ## Real Gemini Live mode (Milestone 3.5)
 

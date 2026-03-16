@@ -3,156 +3,817 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>KindlyClick Audio</title>
+    <title>KindlyClick</title>
     <style>
       :root {
-        --bg: #f7f8f5;
-        --panel: #ffffff;
-        --ink: #1f2937;
-        --muted: #6b7280;
-        --accent: #0f766e;
-        --danger: #b91c1c;
+        --bg-top: #f4dcc8;
+        --bg-bottom: #f5f1e8;
+        --panel: rgba(255, 251, 245, 0.9);
+        --panel-strong: rgba(255, 249, 240, 0.98);
+        --line: rgba(77, 42, 32, 0.12);
+        --line-strong: rgba(77, 42, 32, 0.2);
+        --ink: #221714;
+        --muted: #70574d;
+        --accent: #b14f2f;
+        --accent-strong: #8f391d;
+        --signal-live: #0e8b63;
+        --signal-warn: #c77b1d;
+        --signal-idle: #8b6b5f;
+        --signal-danger: #b43c30;
+        --shadow: 0 18px 40px rgba(89, 55, 41, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
       }
 
       body {
         margin: 0;
-        padding: 12px;
-        font: 14px/1.4 "Segoe UI", Tahoma, sans-serif;
-        background: radial-gradient(circle at top left, #ecfdf5 0%, var(--bg) 58%);
+        min-height: 100vh;
+        font: 14px/1.45 "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
         color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(255, 255, 255, 0.75), transparent 38%),
+          linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      .shell {
+        padding: 14px;
+        display: grid;
+        gap: 12px;
       }
 
       .card {
         background: var(--panel);
-        border: 1px solid #e5e7eb;
-        border-radius: 12px;
-        padding: 12px;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+        backdrop-filter: blur(18px);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+        padding: 14px;
+        animation: panel-in 220ms ease-out both;
       }
 
-      .row {
+      .hero {
+        position: relative;
+        overflow: hidden;
+        background:
+          linear-gradient(145deg, rgba(255, 243, 233, 0.98), rgba(255, 248, 241, 0.88)),
+          var(--panel-strong);
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -24px -30px auto;
+        width: 110px;
+        height: 110px;
+        border-radius: 999px;
+        background: radial-gradient(circle, rgba(177, 79, 47, 0.16), transparent 68%);
+        pointer-events: none;
+      }
+
+      .hero-top {
         display: flex;
-        gap: 8px;
-        margin-top: 10px;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
       }
 
-      .row > * {
-        flex: 1;
+      .hero-copy {
+        display: grid;
+        gap: 6px;
+        position: relative;
+        z-index: 1;
+      }
+
+      .eyebrow {
+        margin: 0;
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--accent-strong);
+        font-weight: 700;
+      }
+
+      h1,
+      h2 {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      h1 {
+        font-size: 24px;
+        line-height: 1.1;
+      }
+
+      h2 {
+        font-size: 18px;
+      }
+
+      .hero-note,
+      .section-note,
+      .meta-note,
+      .session-meta,
+      .tab-copy {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .hero-status {
+        display: grid;
+        gap: 8px;
+        justify-items: end;
+        min-width: 118px;
+        position: relative;
+        z-index: 1;
+      }
+
+      .status-badge,
+      .metric-value {
+        border-radius: 999px;
+        padding: 7px 11px;
+        border: 1px solid transparent;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .status-badge[data-tone="live"] {
+        box-shadow: 0 0 0 0 rgba(14, 139, 99, 0.28);
+        animation: pulse-live 1.8s infinite;
+      }
+
+      .session-meta {
+        font-size: 12px;
+        text-align: right;
+        max-width: 190px;
+        overflow-wrap: anywhere;
+      }
+
+      [data-tone="idle"] {
+        background: rgba(139, 107, 95, 0.12);
+        color: var(--signal-idle);
+        border-color: rgba(139, 107, 95, 0.18);
+      }
+
+      [data-tone="warming"] {
+        background: rgba(199, 123, 29, 0.12);
+        color: var(--signal-warn);
+        border-color: rgba(199, 123, 29, 0.18);
+      }
+
+      [data-tone="live"] {
+        background: rgba(14, 139, 99, 0.12);
+        color: var(--signal-live);
+        border-color: rgba(14, 139, 99, 0.2);
+      }
+
+      [data-tone="danger"] {
+        background: rgba(180, 60, 48, 0.1);
+        color: var(--signal-danger);
+        border-color: rgba(180, 60, 48, 0.16);
+      }
+
+      .tab-bar {
+        display: inline-flex;
+        gap: 8px;
+        padding: 4px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.46);
+        border: 1px solid rgba(77, 42, 32, 0.08);
+      }
+
+      .tab-btn {
+        min-height: 36px;
+        border: 0;
+        border-radius: 999px;
+        padding: 0 14px;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+      }
+
+      .tab-btn:hover {
+        transform: translateY(-1px);
+      }
+
+      .tab-btn[aria-pressed="true"] {
+        background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+        color: #fff9f5;
+      }
+
+      .view[hidden] {
+        display: none;
+      }
+
+      .help-stage {
+        min-height: 320px;
+        display: grid;
+        align-content: center;
+        justify-items: center;
+        gap: 16px;
+        text-align: center;
+        background:
+          radial-gradient(circle at center, rgba(255, 255, 255, 0.52), transparent 64%),
+          var(--panel);
+      }
+
+      .help-action {
+        width: min(100%, 280px);
+        min-height: 148px;
+        border: 0;
+        border-radius: 999px;
+        padding: 28px 24px;
+        background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+        color: #fff9f5;
+        font-size: 28px;
+        font-weight: 700;
+        line-height: 1.1;
+        letter-spacing: -0.02em;
+        box-shadow: 0 18px 32px rgba(143, 57, 29, 0.24);
+        cursor: pointer;
+        transition: transform 140ms ease, box-shadow 140ms ease, filter 140ms ease;
+      }
+
+      .help-action:hover:not(:disabled) {
+        transform: translateY(-2px);
+        box-shadow: 0 22px 38px rgba(143, 57, 29, 0.26);
+      }
+
+      .help-action:disabled {
+        cursor: progress;
+        filter: saturate(0.75);
+      }
+
+      .help-action[data-mode="stop"] {
+        background: linear-gradient(180deg, #c85642, #a4382a);
+        box-shadow: 0 18px 32px rgba(164, 56, 42, 0.22);
+      }
+
+      .help-action[data-mode="start"].is-pulsing {
+        animation: pulse-help 1.9s infinite;
+      }
+
+      .help-description {
+        width: min(100%, 320px);
+        margin: 0;
+        color: var(--muted);
+        font-size: 15px;
+      }
+
+      .help-progress {
+        width: min(100%, 340px);
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.54);
+        border: 1px solid rgba(77, 42, 32, 0.08);
+        text-align: left;
+      }
+
+      .help-progress-label {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--accent-strong);
+      }
+
+      .help-track {
+        position: relative;
+        height: 10px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(177, 79, 47, 0.12);
+      }
+
+      .help-track-fill {
+        height: 100%;
+        width: 0%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent), #df8d64, var(--accent));
+        background-size: 180% 100%;
+        transition: width 220ms ease;
+      }
+
+      .help-track-fill.is-animating {
+        animation: progress-shift 1.2s linear infinite;
+      }
+
+      .help-steps {
+        display: grid;
+        gap: 8px;
+      }
+
+      .help-step {
+        display: grid;
+        grid-template-columns: 16px 1fr;
+        gap: 10px;
+        align-items: center;
+        color: var(--muted);
+        transition: color 160ms ease, transform 160ms ease;
+      }
+
+      .help-step-dot {
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        border: 2px solid rgba(139, 107, 95, 0.35);
+        background: rgba(139, 107, 95, 0.12);
+        position: relative;
+      }
+
+      .help-step[data-state="active"] {
+        color: var(--accent-strong);
+        transform: translateX(2px);
+      }
+
+      .help-step[data-state="active"] .help-step-dot {
+        border-color: rgba(177, 79, 47, 0.7);
+        background: rgba(177, 79, 47, 0.18);
+      }
+
+      .help-step[data-state="active"] .help-step-dot::after {
+        content: "";
+        position: absolute;
+        inset: 2px;
+        border-radius: inherit;
+        background: var(--accent);
+        animation: step-pulse 1.2s infinite;
+      }
+
+      .help-step[data-state="complete"] {
+        color: #2a6c55;
+      }
+
+      .help-step[data-state="complete"] .help-step-dot {
+        border-color: rgba(14, 139, 99, 0.5);
+        background: rgba(14, 139, 99, 0.15);
+      }
+
+      .help-step[data-state="complete"] .help-step-dot::after {
+        content: "";
+        position: absolute;
+        inset: 3px;
+        border-radius: inherit;
+        background: var(--signal-live);
+      }
+
+      .help-step[data-state="waiting"] .help-step-dot {
+        border-color: rgba(199, 123, 29, 0.5);
+        background: rgba(199, 123, 29, 0.12);
+      }
+
+      .advanced-shell {
+        display: grid;
+        gap: 12px;
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .metric {
+        padding: 12px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 250, 0.72);
+        display: grid;
+        gap: 8px;
+      }
+
+      .metric-label {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .metric-value {
+        justify-self: start;
+      }
+
+      .section {
+        display: grid;
+        gap: 12px;
+      }
+
+      .section-top,
+      .log-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
       }
 
       label {
-        display: block;
-        margin-bottom: 4px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
         color: var(--muted);
-        font-weight: 600;
       }
 
       input,
       select,
-      button {
+      button.control-btn {
         width: 100%;
-        box-sizing: border-box;
-        border: 1px solid #d1d5db;
-        border-radius: 8px;
-        padding: 8px 10px;
-        font: inherit;
+        min-height: 42px;
+        border-radius: 12px;
+        border: 1px solid var(--line-strong);
       }
 
-      button {
+      input,
+      select {
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.78);
+        color: var(--ink);
+      }
+
+      button.control-btn {
+        padding: 10px 12px;
         cursor: pointer;
-        background: #f8fafc;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.72);
+        transition:
+          transform 140ms ease,
+          background 140ms ease,
+          border-color 140ms ease,
+          box-shadow 140ms ease;
       }
 
-      button.primary {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: #fff;
+      button.control-btn:hover:not(:disabled) {
+        transform: translateY(-1px);
+        border-color: rgba(177, 79, 47, 0.28);
+        box-shadow: 0 10px 20px rgba(89, 55, 41, 0.08);
       }
 
-      button.danger {
-        background: var(--danger);
-        border-color: var(--danger);
-        color: #fff;
-      }
-
-      button:disabled {
+      button.control-btn:disabled {
         cursor: not-allowed;
-        opacity: 0.6;
+        opacity: 0.55;
+        box-shadow: none;
       }
 
-      #status {
-        margin-top: 10px;
-        font-weight: 600;
+      input:focus,
+      select:focus,
+      button:focus {
+        outline: 2px solid rgba(177, 79, 47, 0.18);
+        outline-offset: 2px;
       }
 
-      #micInfo {
-        margin-top: 6px;
-        color: var(--muted);
+      .button-primary {
+        background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+        color: #fff9f5;
+        border-color: rgba(143, 57, 29, 0.5);
+      }
+
+      .button-soft {
+        background: rgba(177, 79, 47, 0.08);
+        color: var(--accent-strong);
+      }
+
+      .button-danger {
+        background: rgba(180, 60, 48, 0.1);
+        color: var(--signal-danger);
+      }
+
+      .dual-grid,
+      .triple-grid {
+        display: grid;
+        gap: 8px;
+      }
+
+      .dual-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .triple-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .meta-note {
         font-size: 12px;
-        line-height: 1.3;
-      }
-
-      #visionInfo {
-        margin-top: 4px;
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.3;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.56);
+        border: 1px solid rgba(77, 42, 32, 0.08);
       }
 
       #log {
-        margin-top: 10px;
-        max-height: 220px;
+        margin: 0;
+        min-height: 180px;
+        max-height: 280px;
         overflow: auto;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        background: #f8fafc;
-        padding: 8px;
-        font-size: 12px;
+        border-radius: 14px;
+        padding: 12px;
+        border: 1px solid rgba(77, 42, 32, 0.08);
+        background:
+          linear-gradient(180deg, rgba(39, 24, 19, 0.96), rgba(55, 34, 27, 0.96));
+        color: #f9decf;
+        font: 12px/1.5 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
         white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      #log[data-empty="true"]::before {
+        content: "Advanced activity will appear here once the runtime starts talking.";
+        color: rgba(249, 222, 207, 0.65);
+      }
+
+      @keyframes pulse-live {
+        0% {
+          box-shadow: 0 0 0 0 rgba(14, 139, 99, 0.28);
+        }
+
+        70% {
+          box-shadow: 0 0 0 10px rgba(14, 139, 99, 0);
+        }
+
+        100% {
+          box-shadow: 0 0 0 0 rgba(14, 139, 99, 0);
+        }
+      }
+
+      @keyframes pulse-help {
+        0% {
+          box-shadow: 0 0 0 0 rgba(177, 79, 47, 0.28);
+        }
+
+        70% {
+          box-shadow: 0 0 0 18px rgba(177, 79, 47, 0);
+        }
+
+        100% {
+          box-shadow: 0 0 0 0 rgba(177, 79, 47, 0);
+        }
+      }
+
+      @keyframes step-pulse {
+        0% {
+          transform: scale(0.8);
+          opacity: 0.7;
+        }
+
+        60% {
+          transform: scale(1);
+          opacity: 1;
+        }
+
+        100% {
+          transform: scale(0.8);
+          opacity: 0.7;
+        }
+      }
+
+      @keyframes progress-shift {
+        0% {
+          background-position: 0% 50%;
+        }
+
+        100% {
+          background-position: 180% 50%;
+        }
+      }
+
+      @keyframes panel-in {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @media (max-width: 420px) {
+        .hero-top,
+        .section-top,
+        .log-top {
+          flex-direction: column;
+        }
+
+        .hero-status {
+          justify-items: start;
+        }
+
+        .session-meta {
+          text-align: left;
+        }
+
+        .dual-grid,
+        .triple-grid,
+        .metrics {
+          grid-template-columns: 1fr;
+        }
+
+        .help-action {
+          width: 100%;
+          min-height: 132px;
+          font-size: 24px;
+        }
       }
     </style>
   </head>
   <body>
-    <div class="card">
-      <label for="wsUrl">Backend WebSocket URL</label>
-      <input id="wsUrl" type="text" value="ws://127.0.0.1:8091/ws" />
+    <main class="shell">
+      <section class="card hero">
+        <div class="hero-top">
+          <div class="hero-copy">
+            <p class="eyebrow">KindlyClick</p>
+            <h1>Need a hand?</h1>
+            <p id="guidance" class="hero-note">Press once to start AI help for the page you are on.</p>
+          </div>
+          <div class="hero-status">
+            <div id="status" class="status-badge" data-tone="idle" aria-live="polite">Idle</div>
+            <p id="sessionMeta" class="session-meta">AI help is off.</p>
+          </div>
+        </div>
+      </section>
 
-      <div class="row">
-        <button id="connectBtn" class="primary">Connect</button>
-        <button id="disconnectBtn" disabled>Disconnect</button>
-      </div>
+      <section class="card">
+        <div class="tab-bar" aria-label="Panel views">
+          <button id="helpTabBtn" class="tab-btn" type="button" aria-pressed="true">Help</button>
+          <button id="advancedTabBtn" class="tab-btn" type="button" aria-pressed="false">
+            Advanced
+          </button>
+        </div>
+      </section>
 
-      <label for="micSelect">Microphone Device</label>
-      <div class="row">
-        <select id="micSelect"></select>
-        <button id="refreshMicBtn">Refresh Mics</button>
-      </div>
+      <section id="helpView" class="card view help-stage" aria-labelledby="helpActionBtn">
+        <button
+          id="helpActionBtn"
+          class="help-action is-pulsing"
+          type="button"
+          data-mode="start"
+        >
+          Call for help
+        </button>
+        <p id="helpDescription" class="help-description">
+          KindlyClick will listen to you, look at the page you choose, and talk you through what to do next.
+        </p>
+        <div id="helpProgress" class="help-progress" hidden>
+          <div id="helpProgressLabel" class="help-progress-label">Getting things ready...</div>
+          <div class="help-track" aria-hidden="true">
+            <div id="helpProgressBar" class="help-track-fill is-animating"></div>
+          </div>
+          <div class="help-steps">
+            <div id="helpStepConnect" class="help-step" data-state="pending">
+              <span class="help-step-dot"></span>
+              <span>Getting the helper ready</span>
+            </div>
+            <div id="helpStepMic" class="help-step" data-state="pending">
+              <span class="help-step-dot"></span>
+              <span>Turning on listening</span>
+            </div>
+            <div id="helpStepVision" class="help-step" data-state="pending">
+              <span class="help-step-dot"></span>
+              <span>Starting screen view</span>
+            </div>
+          </div>
+        </div>
+      </section>
 
-      <div class="row">
-        <button id="startMicBtn" disabled>Start Mic</button>
-        <button id="endTurnBtn" disabled>End Turn</button>
-        <button id="stopMicBtn" class="danger" disabled>Stop Mic</button>
-      </div>
+      <section id="advancedView" class="view advanced-shell" hidden>
+        <section class="card metrics" aria-label="Runtime status">
+          <article class="metric">
+            <span class="metric-label">Connection</span>
+            <span id="connectionPill" class="metric-value" data-tone="idle">Offline</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Session</span>
+            <span id="sessionPill" class="metric-value" data-tone="idle">Waiting</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Microphone</span>
+            <span id="micPill" class="metric-value" data-tone="idle">Not armed</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Vision</span>
+            <span id="visionPill" class="metric-value" data-tone="idle">Idle</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Log relay</span>
+            <span id="relayPill" class="metric-value" data-tone="idle">Local only</span>
+          </article>
+        </section>
 
-      <div class="row">
-        <button id="startVisionBtn">Start Vision</button>
-        <button id="stopVisionBtn" class="danger" disabled>Stop Vision</button>
-      </div>
+        <section class="card section" aria-labelledby="backendHeading">
+          <div class="section-top">
+            <div>
+              <h2 id="backendHeading">Backend link</h2>
+              <p class="section-note">
+                Advanced controls for connection and setup live here.
+              </p>
+            </div>
+          </div>
+          <div class="field">
+            <label for="wsUrl">Backend WebSocket URL</label>
+            <input id="wsUrl" type="text" value="ws://127.0.0.1:8091/ws" spellcheck="false" />
+          </div>
+          <div class="dual-grid">
+            <button id="connectBtn" class="control-btn button-primary" type="button">
+              Connect runtime
+            </button>
+            <button id="disconnectBtn" class="control-btn button-soft" type="button" disabled>
+              Disconnect
+            </button>
+          </div>
+        </section>
 
-      <div class="row">
-        <button id="askVisionBtn" disabled>Ask: What do you see?</button>
-      </div>
+        <section class="card section" aria-labelledby="micHeading">
+          <div class="section-top">
+            <div>
+              <h2 id="micHeading">Microphone lane</h2>
+              <p class="section-note">Choose an input and control spoken turn-taking manually.</p>
+            </div>
+          </div>
+          <p id="micInfo" class="meta-note">Mic access has not been requested yet.</p>
+          <div class="dual-grid">
+            <div class="field">
+              <label for="micSelect">Input device</label>
+              <select id="micSelect" aria-label="Microphone device"></select>
+            </div>
+            <div class="field">
+              <label for="refreshMicBtn">Device inventory</label>
+              <button id="refreshMicBtn" class="control-btn button-soft" type="button">
+                Refresh microphones
+              </button>
+            </div>
+          </div>
+          <div class="triple-grid">
+            <button id="startMicBtn" class="control-btn button-primary" type="button" disabled>
+              Start mic
+            </button>
+            <button id="endTurnBtn" class="control-btn button-soft" type="button" disabled>
+              End turn
+            </button>
+            <button id="stopMicBtn" class="control-btn button-danger" type="button" disabled>
+              Stop mic
+            </button>
+          </div>
+        </section>
 
-      <div class="row">
-        <button id="toggleLogRelayBtn">Log Relay: Off</button>
-      </div>
+        <section class="card section" aria-labelledby="visionHeading">
+          <div class="section-top">
+            <div>
+              <h2 id="visionHeading">Vision lane</h2>
+              <p class="section-note">
+                Start or stop screen sharing and manually ask for a visual summary.
+              </p>
+            </div>
+          </div>
+          <p id="visionInfo" class="meta-note">
+            Vision is idle. Start screen sharing when you want grounded page guidance.
+          </p>
+          <div class="dual-grid">
+            <button id="startVisionBtn" class="control-btn button-primary" type="button">
+              Start vision
+            </button>
+            <button id="stopVisionBtn" class="control-btn button-danger" type="button" disabled>
+              Stop vision
+            </button>
+          </div>
+          <button id="askVisionBtn" class="control-btn button-soft" type="button" disabled>
+            Ask what it sees
+          </button>
+        </section>
 
-      <div id="status">Status: idle</div>
-      <div id="micInfo">Mic: not requested</div>
-      <div id="visionInfo">Vision: idle</div>
-      <div id="log"></div>
-    </div>
+        <section class="card section" aria-labelledby="diagnosticsHeading">
+          <div class="log-top">
+            <div>
+              <h2 id="diagnosticsHeading">Diagnostics</h2>
+              <p id="logSummary" class="section-note">Waiting for runtime activity.</p>
+            </div>
+            <button id="toggleLogRelayBtn" class="control-btn button-soft" type="button">
+              Relay logs to backend
+            </button>
+          </div>
+          <pre id="log" data-empty="true" aria-live="polite"></pre>
+        </section>
+      </section>
+    </main>
 
+    <script src="src/runtimeProtocol.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>

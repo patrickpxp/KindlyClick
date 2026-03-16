@@ -1,11 +1,11 @@
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require("./runtimeProtocol.js"));
     return;
   }
 
-  root.KindlyClickAudioController = factory();
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  root.KindlyClickAudioController = factory(root.KindlyClickRuntimeProtocol);
+})(typeof globalThis !== "undefined" ? globalThis : this, function (runtimeProtocol) {
   const READY_STATE_OPEN = 1;
 
   function randomSessionId() {
@@ -185,7 +185,7 @@
     }
 
     getSnapshot() {
-      return {
+      return runtimeProtocol.normalizeRuntimeStateSnapshot({
         status: this.status,
         connected: this.connected,
         connecting: this.connecting,
@@ -197,7 +197,7 @@
         activeWsUrl: this.activeWsUrl,
         sessionId: this.sessionId,
         clientLogForwardingEnabled: this.clientLogForwardingEnabled
-      };
+      });
     }
 
     emitState() {
@@ -373,9 +373,15 @@
 
       this.socket.onmessage = (event) => {
         try {
-          const message = JSON.parse(event.data);
-          this.trace({ direction: "in", message });
-          this.handleSocketMessage(message);
+          const rawMessage = JSON.parse(event.data);
+          const parsedMessage = runtimeProtocol.parseBackendServerMessage(rawMessage);
+          if (!parsedMessage.ok) {
+            this.log(`invalid message: ${parsedMessage.error}`);
+            return;
+          }
+
+          this.trace({ direction: "in", message: parsedMessage.value });
+          this.handleSocketMessage(parsedMessage.value);
         } catch (error) {
           this.log(`invalid message: ${error.message}`);
         }

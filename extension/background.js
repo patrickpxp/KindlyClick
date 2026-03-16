@@ -1,11 +1,17 @@
 if (typeof importScripts === "function") {
+  importScripts("src/runtimeProtocol.js");
   importScripts("src/runtimeCoordinator.js");
 }
 
 const MAX_RECENT_NAVIGATION_EVENTS = 5;
 const NAVIGATION_EVENT_RETENTION_MS = 30_000;
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
-const OFFSCREEN_RUNTIME_TARGET = "kindlyclick-offscreen-runtime";
+const ONBOARDING_PAGE_PATH = "onboarding.html";
+const OFFSCREEN_READY_TIMEOUT_MS = 12_000;
+const OFFSCREEN_COMMAND_RETRY_DELAY_MS = 100;
+const OFFSCREEN_COMMAND_RETRY_TIMEOUT_MS = 5_000;
+const runtimeProtocol = globalThis.KindlyClickRuntimeProtocol;
+const OFFSCREEN_RUNTIME_TARGET = runtimeProtocol.OFFSCREEN_RUNTIME_TARGET;
 
 const recentNavigationEventsByTab = new Map();
 let offscreenDocumentPromise = null;
@@ -13,8 +19,49 @@ let offscreenReadyWaiters = [];
 
 const runtimeCoordinator = globalThis.KindlyClickRuntimeCoordinator.createRuntimeCoordinator();
 
-chrome.runtime.onInstalled.addListener(() => {
+async function enableOpenPanelOnActionClick() {
+  if (!chrome.sidePanel || !chrome.sidePanel.setPanelBehavior) {
+    return;
+  }
+
+  await chrome.sidePanel.setPanelBehavior({
+    openPanelOnActionClick: true
+  });
+}
+
+async function openOnboardingPage() {
+  if (!chrome.tabs || !chrome.tabs.create) {
+    return;
+  }
+
+  await chrome.tabs.create({
+    url: chrome.runtime.getURL(ONBOARDING_PAGE_PATH),
+    active: true
+  });
+}
+
+enableOpenPanelOnActionClick().catch((error) => {
+  console.warn("Failed to enable action-click side panel opening", error);
+});
+
+chrome.runtime.onInstalled.addListener((details) => {
   console.log("KindlyClick background initialized");
+
+  enableOpenPanelOnActionClick().catch((error) => {
+    console.warn("Failed to enable action-click side panel opening", error);
+  });
+
+  if (details?.reason === "install") {
+    openOnboardingPage().catch((error) => {
+      console.warn("Failed to open KindlyClick onboarding page", error);
+    });
+  }
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  enableOpenPanelOnActionClick().catch((error) => {
+    console.warn("Failed to enable action-click side panel opening", error);
+  });
 });
 
 async function getActiveTab() {
@@ -79,7 +126,7 @@ function resolveOffscreenReadyWaiters(error = null) {
   });
 }
 
-function waitForOffscreenReady(timeoutMs = 3000) {
+function waitForOffscreenReady(timeoutMs = OFFSCREEN_READY_TIMEOUT_MS) {
   const snapshot = getCoordinatorSnapshot();
   if (snapshot.offscreenLifecycle.ready) {
     return Promise.resolve();
@@ -135,7 +182,13 @@ async function ensureOffscreenDocument() {
 
   if (await hasOffscreenDocument()) {
     await recordOffscreenLifecycleEvent("create_skipped_existing");
-    await waitForOffscreenReady().catch(() => {});
+    await waitForOffscreenReady().catch(async (error) => {
+      await recordOffscreenLifecycleEvent(
+        "ready_wait_timeout",
+        { error: error.message || "offscreen runtime not yet ready" },
+        { log: true }
+      );
+    });
     return;
   }
 
@@ -166,7 +219,51 @@ async function ensureOffscreenDocument() {
   }
 
   await offscreenDocumentPromise;
-  await waitForOffscreenReady();
+  await waitForOffscreenReady().catch(async (error) => {
+    await recordOffscreenLifecycleEvent(
+      "ready_wait_timeout",
+      { error: error.message || "offscreen runtime not yet ready" },
+      { log: true }
+    );
+  });
+}
+
+async function sendOffscreenCommandWithRetry(payload, command) {
+  const startedAt = Date.now();
+  let retryCount = 0;
+
+  while (Date.now() - startedAt < OFFSCREEN_COMMAND_RETRY_TIMEOUT_MS) {
+    try {
+      const response = await chrome.runtime.sendMessage(payload);
+      return response || { ok: false, error: "No response from offscreen runtime" };
+    } catch (error) {
+      const errorText = String(error?.message || "");
+      if (!errorText.includes("Receiving end does not exist")) {
+        await recordOffscreenLifecycleEvent(
+          "command_error",
+          { command, error: errorText || "offscreen command failed" },
+          { log: true }
+        );
+        throw error;
+      }
+
+      retryCount += 1;
+      await recordOffscreenLifecycleEvent(
+        "command_retry",
+        { command, retryCount },
+        { log: true }
+      );
+      await new Promise((resolve) => setTimeout(resolve, OFFSCREEN_COMMAND_RETRY_DELAY_MS));
+    }
+  }
+
+  const timeoutError = new Error("Offscreen runtime did not become reachable in time");
+  await recordOffscreenLifecycleEvent(
+    "command_error",
+    { command, error: timeoutError.message },
+    { log: true }
+  );
+  throw timeoutError;
 }
 
 async function forwardRuntimeCommand(message) {
@@ -187,30 +284,7 @@ async function forwardRuntimeCommand(message) {
     logRelayEnabled: message.logRelayEnabled
   };
 
-  let response;
-  try {
-    response = await chrome.runtime.sendMessage(payload);
-  } catch (error) {
-    const errorText = String(error?.message || "");
-    if (!errorText.includes("Receiving end does not exist")) {
-      await recordOffscreenLifecycleEvent(
-        "command_error",
-        { command: message.command || "", error: errorText || "offscreen command failed" },
-        { log: true }
-      );
-      throw error;
-    }
-
-    await recordOffscreenLifecycleEvent(
-      "command_retry",
-      { command: message.command || "" },
-      { log: true }
-    );
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    response = await chrome.runtime.sendMessage(payload);
-  }
-
-  return response || { ok: false, error: "No response from offscreen runtime" };
+  return sendOffscreenCommandWithRetry(payload, message.command || "");
 }
 
 function normalizeText(value, maxLength = 80) {
@@ -368,34 +442,64 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 
     if (message.type === "kindlyclick:runtime-command") {
-      const response = await forwardRuntimeCommand(message);
+      const parsed = runtimeProtocol.parseRuntimeCommandRequest(message);
+      if (!parsed.ok) {
+        sendResponse({ ok: false, error: parsed.error });
+        return;
+      }
+
+      const response = await forwardRuntimeCommand(parsed.value);
       sendResponse(response);
       return;
     }
 
     if (message.type === "kindlyclick:runtime-state-update") {
-      runtimeCoordinator.setRuntimeState(message.snapshot || {});
+      const parsed = runtimeProtocol.parseRuntimeStateUpdateMessage(message);
+      if (!parsed.ok) {
+        sendResponse({ ok: false, error: parsed.error });
+        return;
+      }
+
+      runtimeCoordinator.setRuntimeState(parsed.value);
       await broadcastRuntimeState();
       sendResponse({ ok: true });
       return;
     }
 
     if (message.type === "kindlyclick:runtime-vision-state-update") {
-      runtimeCoordinator.setVisionState(message.visionState || {});
+      const parsed = runtimeProtocol.parseRuntimeVisionStateUpdateMessage(message);
+      if (!parsed.ok) {
+        sendResponse({ ok: false, error: parsed.error });
+        return;
+      }
+
+      runtimeCoordinator.setVisionState(parsed.value);
       await broadcastVisionState();
       sendResponse({ ok: true });
       return;
     }
 
     if (message.type === "kindlyclick:runtime-log") {
-      await appendRuntimeLog(message.text || "");
+      const parsed = runtimeProtocol.parseRuntimeLogMessage(message);
+      if (!parsed.ok) {
+        sendResponse({ ok: false, error: parsed.error });
+        return;
+      }
+
+      await appendRuntimeLog(parsed.value.text);
       sendResponse({ ok: true });
       return;
     }
 
     if (message.type === "kindlyclick:offscreen-lifecycle") {
-      const eventName = String(message.event || "").trim() || "unknown";
-      await recordOffscreenLifecycleEvent(eventName, message.data || {}, { log: true });
+      const parsed = runtimeProtocol.parseOffscreenLifecycleMessage(message);
+      if (!parsed.ok) {
+        sendResponse({ ok: false, error: parsed.error });
+        return;
+      }
+
+      const eventName = parsed.value.event;
+      await recordOffscreenLifecycleEvent(eventName, parsed.value.data, { log: true });
       if (eventName === "booted") {
         resolveOffscreenReadyWaiters();
       }

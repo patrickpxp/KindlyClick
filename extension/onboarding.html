@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Welcome to KindlyClick</title>
+    <style>
+      :root {
+        --bg-top: #f4dcc8;
+        --bg-bottom: #f7f3ea;
+        --panel: rgba(255, 251, 245, 0.94);
+        --line: rgba(77, 42, 32, 0.12);
+        --ink: #221714;
+        --muted: #70574d;
+        --accent: #b14f2f;
+        --accent-strong: #8f391d;
+        --shadow: 0 20px 44px rgba(89, 55, 41, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        color: var(--ink);
+        font: 16px/1.5 "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(255, 255, 255, 0.78), transparent 34%),
+          linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+      }
+
+      .panel {
+        width: min(100%, 720px);
+        padding: 28px;
+        border-radius: 24px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        font-size: 12px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--accent-strong);
+        font-weight: 700;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font: 700 34px/1.05 Georgia, "Times New Roman", serif;
+        letter-spacing: -0.03em;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .lead {
+        max-width: 560px;
+        font-size: 18px;
+      }
+
+      .grid {
+        display: grid;
+        gap: 14px;
+        margin-top: 24px;
+      }
+
+      .step {
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid rgba(77, 42, 32, 0.08);
+        background: rgba(255, 255, 255, 0.62);
+      }
+
+      .step-label {
+        display: inline-block;
+        margin-bottom: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--accent-strong);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 24px;
+      }
+
+      button {
+        min-height: 50px;
+        border: 1px solid rgba(77, 42, 32, 0.16);
+        border-radius: 14px;
+        padding: 0 18px;
+        font: inherit;
+        cursor: pointer;
+        transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(89, 55, 41, 0.1);
+      }
+
+      .primary {
+        background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+        color: #fff9f5;
+        border-color: rgba(143, 57, 29, 0.4);
+      }
+
+      .secondary {
+        background: rgba(255, 255, 255, 0.7);
+        color: var(--ink);
+      }
+
+      .status {
+        margin-top: 16px;
+        min-height: 24px;
+        font-weight: 700;
+        color: var(--accent-strong);
+      }
+
+      @media (max-width: 640px) {
+        .panel {
+          padding: 22px;
+        }
+
+        h1 {
+          font-size: 28px;
+        }
+
+        .actions {
+          grid-template-columns: 1fr;
+        }
+
+        button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="panel">
+      <p class="eyebrow">Welcome to KindlyClick</p>
+      <h1>Help is one click away.</h1>
+      <p class="lead">
+        KindlyClick lives in Chrome’s side panel. We’ll make the toolbar button open it for you, so after setup you can usually just click the KindlyClick icon once.
+      </p>
+
+      <section class="grid" aria-label="Getting started">
+        <div class="step">
+          <span class="step-label">Step 1</span>
+          <p>
+            If you can, pin KindlyClick to the Chrome toolbar so it is easy to find later.
+          </p>
+        </div>
+        <div class="step">
+          <span class="step-label">Step 2</span>
+          <p>
+            Press the button below to open KindlyClick now.
+          </p>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button id="openBtn" class="primary" type="button">Open KindlyClick</button>
+        <button id="closeBtn" class="secondary" type="button">Close this page</button>
+      </div>
+
+      <div id="status" class="status" aria-live="polite"></div>
+    </main>
+    <script src="onboarding.js"></script>
+  </body>
+</html>

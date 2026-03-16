@@ -1,16 +1,18 @@
 # KindlyClick Sequential Agent TODO
 
-Updated from the repository state on March 11, 2026.
+Updated from the repository state on March 16, 2026.
 
 ## Status
 
 Completed through:
 
 - T13 `T13_INTERACTION_LOOP_HARDENING.md`
+- T15 `T15_SELECTIVE_MAINTAINABILITY_IMPROVEMENTS.md`
+- T16 `T16_REDESIGN_EXTENSION_UI.md`
 
 Current next item:
 
-- T15 `Apply selective maintainability improvements`
+- No default next item. Choose the next phase intentionally.
 
 ## Purpose
 
@@ -199,7 +201,7 @@ Each item includes:
   - stricter protocol schemas
   - validation and test improvements
 - Exit criteria: The highest-risk parts of the codebase become easier to evolve safely.
-- Status: Next item.
+- Status: Complete for the selected protocol-validation-focused slice. See `T15_SELECTIVE_MAINTAINABILITY_IMPROVEMENTS.md`.
 
 ### T16. Redesign the extension UI
 
@@ -207,6 +209,7 @@ Each item includes:
 - Why now: UI redesign should follow architectural and interaction stability, not precede it.
 - Deliverable: A redesign plan and implementation aligned with the settled runtime and user flows.
 - Exit criteria: The interface reflects the product we actually decided to build, rather than an earlier prototype.
+- Status: Complete. See `T16_REDESIGN_EXTENSION_UI.md`.
 
 ## Current sequencing rule
 

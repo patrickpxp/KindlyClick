@@ -1,6 +1,6 @@
 # KindlyClick Technical Overview
 
-Updated from the repository state on March 11, 2026.
+Updated from the repository state on March 16, 2026.
 
 ## Purpose of this document
 
@@ -22,17 +22,30 @@ The intended UX is "pair navigation by voice": the user asks for help in natural
 
 ### 1. Chrome extension
 
-The extension is a Manifest V3 Chrome extension built around a side panel UI.
+The extension is a Manifest V3 Chrome extension built around:
+
+- a help-first side panel UI
+- an offscreen document that owns the live runtime
+- a background service worker that manages lifecycle and routing
 
 Main pieces:
 
-- `extension/sidepanel.html` + `extension/sidepanel.js`: primary control surface for connecting to the backend, starting/stopping microphone capture, starting/stopping vision capture, sending a "What do you see?" prompt, and toggling client log relay.
+- `extension/sidepanel.html` + `extension/sidepanel.js`: primary user-facing UI. The default view is one large `Call for help` button that orchestrates connect + mic + vision startup. Advanced controls remain available behind an `Advanced` tab.
+- `extension/offscreen.html` + `extension/offscreen.js`: primary runtime host for session lifecycle, microphone capture, vision capture, playback, and command handling even when the side panel is closed.
 - `extension/src/audioController.js`: reusable state machine for WebSocket session lifecycle, audio input, playback, turn boundaries, and command dispatch.
-- `extension/background.js`: background service worker used for active-tab lookup, content hint retrieval, opening the microphone permission helper page, and dispatching highlight commands into the page.
+- `extension/src/runtimeProtocol.js`: shared normalization and validation for extension-runtime and backend message shapes.
+- `extension/background.js`: background service worker used for active-tab lookup, content hint retrieval, offscreen runtime lifecycle, onboarding behavior, side-panel-open-on-action-click behavior, opening the microphone permission helper page, and dispatching highlight commands into the page.
 - `extension/content.js`: content script that gathers lightweight page hints and renders the on-page highlight overlay.
 - `extension/request-mic.html`: helper page opened when the side panel cannot complete microphone permission flow directly.
+- `extension/onboarding.html`: first-run onboarding page that teaches pinning and opens the side panel.
 
-The extension currently depends on the side panel as the runtime host. If the side panel is closed, the UI state, capture loops, and session controller go away.
+The most important architecture change from earlier milestones is that the side panel is no longer the runtime host. The offscreen document is.
+
+Practical effect:
+
+- closing the side panel no longer destroys the essential live runtime by default
+- the side panel is now a control/status UI only
+- the background worker is responsible for making sure the offscreen document exists and is reachable
 
 ### 2. Backend
 
@@ -73,22 +86,26 @@ This means the repo already has a decent foundation for validating transport-lev
 
 ### Session start
 
-1. The side panel opens a WebSocket connection to the backend.
-2. The extension sends `session_start` with a generated session ID and basic metadata.
-3. The backend creates or updates a session record and returns `session_started`.
+1. The user opens the side panel, usually by clicking the KindlyClick toolbar icon.
+2. The user presses `Call for help`, or uses the advanced controls directly.
+3. The side panel sends a runtime command to the background worker.
+4. The background worker ensures the offscreen runtime exists, then forwards the command there.
+5. The offscreen runtime opens a WebSocket connection to the backend.
+6. The extension sends `session_start` with a generated session ID and basic metadata.
+7. The backend creates or updates a session record and returns `session_started`.
 
 ### Audio input
 
-1. The side panel captures microphone audio with Web Audio.
+1. The offscreen runtime captures microphone audio with Web Audio.
 2. Audio is resampled to 16 kHz mono PCM16.
 3. Chunks are base64 encoded and sent as `audio_input`.
-4. When the user presses End Turn, the extension sends `audio_input_end`.
+4. When the user presses End Turn in the advanced tab, the extension sends `audio_input_end`.
 
 The controller also uses a lightweight client-side RMS threshold to avoid starting an utterance on very quiet input, but main interruption handling is backend/live-session driven.
 
 ### Vision input
 
-1. The side panel starts screen sharing with `getDisplayMedia`.
+1. The offscreen runtime starts screen sharing with `getDisplayMedia`.
 2. Frames are sampled at 1 FPS.
 3. Each frame is converted to a 1280x720 JPEG and sent as `realtime_input` with `modality: "vision"`.
 4. The extension also sends page metadata gathered from the active tab.
@@ -139,11 +156,15 @@ The highlight system already supports normalized coordinates and optional labels
 ### Implemented in a real way
 
 - extension-to-backend WebSocket protocol
+- shared message-shape validation between extension runtime surfaces and backend WebSocket surfaces
 - microphone streaming and streamed playback
 - barge-in signaling path with `clear_buffer`
 - vision capture loop at low frame rate
 - active-tab metadata enrichment
 - on-page highlight rendering
+- offscreen-owned runtime independent of the side panel
+- help-first side panel UI with advanced controls behind a secondary tab
+- toolbar-click opening of the side panel plus first-run onboarding
 - test harnesses for backend protocol and extension controller behavior
 - minimal Firestore-backed session/tool-call persistence
 - environment-based switch between mock mode and real Gemini Live mode
@@ -162,7 +183,13 @@ The highlight system already supports normalized coordinates and optional labels
 
 ### Side panel dependency
 
-The side panel is the active runtime container. Today, closing it effectively stops the live experience. This is one of the most important architectural constraints for future planning.
+The side panel is no longer the active runtime container.
+
+The current constraint is narrower:
+
+- the side panel is still the primary user-visible entry point
+- Chrome still requires a user action to open the side panel
+- onboarding and toolbar click behavior reduce friction, but do not fully remove Chrome UI concepts from the user journey
 
 ### Narrow page understanding
 
@@ -194,13 +221,15 @@ If someone needs to inspect the system quickly, these are the most useful entry 
 - `README.md`: repo-level setup and workflow
 - `PRODUCT_SPEC.md`: product framing and original goals
 - `extension/manifest.json`: permissions and extension shape
-- `extension/sidepanel.js`: UI orchestration, mic/vision capture, metadata gathering
+- `extension/sidepanel.js`: help-first UI orchestration and advanced controls
+- `extension/offscreen.js`: live runtime host for mic, vision, playback, and session control
 - `extension/src/audioController.js`: protocol/state machine
+- `extension/src/runtimeProtocol.js`: runtime/backend message schema validation
 - `extension/background.js`: active-tab services and command dispatch
 - `extension/content.js`: page hint extraction and highlight rendering
 - `backend/src/server.js`: protocol surface
 - `backend/src/adk/agent.js`: system prompt, tools, mock-vs-real routing
-- `tests/harness.js` and `tests/extension_harness.js`: quickest way to understand expected message flows
+- `tests/harness.js`, `tests/extension_harness.js`, and `tests/runtime_protocol_harness.js`: quickest way to understand expected message flows
 
 ## Discussion areas for the next roadmap
 
@@ -239,11 +268,11 @@ Question: how should the app treat small noises, side conversations, or speech t
 
 The current code has a functional interruption path, but not a sophisticated intent/noise policy layer.
 
-### 5. Removing the side panel as a hard dependency
+### 5. Further reducing side panel friction
 
-Question: can capture, playback, and session control survive when the panel is closed?
+Question: can the user entry flow become even simpler than toolbar-click-to-open plus a help-first button?
 
-This is likely a real architectural decision rather than a UI tweak.
+The hard runtime dependency has already been removed. The remaining question is UX friction at the Chrome surface layer.
 
 ### 6. User testing and product validity
 
