@@ -106,6 +106,7 @@
       };
       this.clientLogForwardingEnabled = Boolean(config.clientLogForwardingEnabled);
       this.clientLogComponent = config.clientLogComponent || "sidepanel.audioController";
+      this.sessionSource = config.sessionSource || "extension-sidepanel";
 
       this.socket = null;
       this.connected = false;
@@ -314,7 +315,7 @@
           sessionId: this.sessionId,
           userId: "extension-user",
           metadata: {
-            source: "extension-sidepanel"
+            source: this.sessionSource
           }
         });
       };
