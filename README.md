@@ -5,7 +5,8 @@ Milestone 3.5 foundation for the KindlyClick Live Agent project.
 ## Structure
 
 - `backend/`: Node.js backend with WebSocket session management, audio streaming, vision frame ingestion, barge-in signaling, and optional real Gemini Live wiring.
-- `terraform/`: Infrastructure-as-code for APIs, Firestore Native DB, and Cloud Run placeholder service.
+- `terraform/`: Infrastructure-as-code for APIs, Firestore Native DB, Artifact Registry, backend IAM, and optional Cloud Run deployment.
+- `scripts/deploy_backend.sh`: End-to-end production deploy helper for infra bootstrap, image build/push, and Cloud Run rollout.
 - `extension/`: Chrome extension with a help-first side panel, onboarding page, offscreen runtime host, 16kHz mono microphone capture, 1 FPS screen vision capture, and response playback.
 - `extension/src/audioController.js`: Reusable audio/session state machine used by both UI and harness tests.
 - `extension/src/runtimeProtocol.js`: Shared protocol normalization and validation for extension-runtime and backend WebSocket messages.
@@ -15,6 +16,34 @@ Milestone 3.5 foundation for the KindlyClick Live Agent project.
 - `tests/harness.js`: WebSocket harness that validates vision simulation, tool loopback (`DRAW_HIGHLIGHT`), Firestore tool-call persistence, and interruption (barge-in) behavior.
 - `tests/extension_harness.js`: End-to-end extension-loop harness using scripted mic input, full controller logic, and timeline artifacts.
 - `tests/runtime_protocol_harness.js`: Targeted harness for runtime-bridge and backend message schema validation.
+
+## Google Cloud Architecture
+
+Canonical Mermaid source: `docs/google-cloud-architecture.mmd`
+
+```mermaid
+flowchart LR
+    subgraph UserSurface["User Surface"]
+        Chrome["Chrome Extension\n(side panel + offscreen runtime)"]
+    end
+
+    subgraph Runtime["Google Cloud Runtime"]
+        Run["Cloud Run\nkindlyclick-backend"]
+        Firestore["Firestore\nsessions + tool calls"]
+        Vertex["Vertex AI Gemini Live\nnative audio model"]
+    end
+
+    subgraph Delivery["Build + Delivery"]
+        CloudBuild["Cloud Build\nregional build submit"]
+        Registry["Artifact Registry\nbackend container image"]
+    end
+
+    Chrome -- "wss://.../ws\nrealtime audio + vision" --> Run
+    Run -- "persist session state" --> Firestore
+    Run -- "Gemini Live session" --> Vertex
+    CloudBuild -- "build + push image" --> Registry
+    Registry -- "deploy container image" --> Run
+```
 
 ## Local run
 
@@ -129,3 +158,53 @@ terraform plan -var="project_id=YOUR_PROJECT_ID"
 ```
 
 Do not run `terraform apply` until project-level settings and billing are confirmed.
+
+## Production backend deploy
+
+Chrome extension publishing is intentionally out of scope here. The production deploy target is the backend service on Cloud Run.
+
+Prerequisites:
+
+- `gcloud` authenticated to the correct project
+- `terraform` installed locally
+- billing enabled on the GCP project
+- `.env` contains `GCP_PROJECT_ID`
+
+One-command deploy:
+
+```bash
+./scripts/deploy_backend.sh
+```
+
+What it does:
+
+- enables required GCP APIs
+- provisions Firestore, Artifact Registry, and the backend runtime service account
+- builds the root `Dockerfile` with Cloud Build and pushes the backend image
+- deploys a public Cloud Run service with Gemini Live + Vertex AI env configured
+
+Useful overrides:
+
+```bash
+IMAGE_TAG=manual-20260316 ./scripts/deploy_backend.sh
+SERVICE_NAME=kindlyclick-backend-staging ./scripts/deploy_backend.sh
+GOOGLE_CLOUD_LOCATION=us-central1 ./scripts/deploy_backend.sh
+```
+
+After deploy, point the extension side panel WebSocket URL at:
+
+```text
+wss://YOUR_CLOUD_RUN_HOST/ws
+```
+
+Manual Terraform flow is still available if you want tighter control:
+
+```bash
+cd terraform
+terraform init
+terraform apply \
+  -var="project_id=YOUR_PROJECT_ID" \
+  -var="region=us-central1" \
+  -var="deploy_cloud_run_service=true" \
+  -var="container_image=us-central1-docker.pkg.dev/YOUR_PROJECT_ID/kindlyclick/backend:TAG"
+```

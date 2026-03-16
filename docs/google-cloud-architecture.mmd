@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph UserSurface["User Surface"]
+        Chrome["Chrome Extension\n(side panel + offscreen runtime)"]
+    end
+
+    subgraph Runtime["Google Cloud Runtime"]
+        Run["Cloud Run\nkindlyclick-backend"]
+        Firestore["Firestore\nsessions + tool calls"]
+        Vertex["Vertex AI Gemini Live\nnative audio model"]
+    end
+
+    subgraph Delivery["Build + Delivery"]
+        CloudBuild["Cloud Build\nregional build submit"]
+        Registry["Artifact Registry\nbackend container image"]
+    end
+
+    Chrome -- "wss://.../ws\nrealtime audio + vision" --> Run
+    Run -- "persist session state" --> Firestore
+    Run -- "Gemini Live session" --> Vertex
+    CloudBuild -- "build + push image" --> Registry
+    Registry -- "deploy container image" --> Run
