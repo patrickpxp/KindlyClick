@@ -7,6 +7,8 @@ const BACKEND_ENTRY = path.resolve(__dirname, "../backend/src/server.js");
 const FIXTURE_PATH = path.resolve(__dirname, "fixtures/sessionStart.json");
 const SAMPLE_WAV_PATH = path.resolve(__dirname, "fixtures/sample_16k_mono.wav");
 const VISION_FIXTURE_PATH = path.resolve(__dirname, "fixtures/visionFrames.json");
+const ARTIFACT_DIR = path.resolve(__dirname, "artifacts");
+const CONTEXT_EVAL_PATH = path.resolve(ARTIFACT_DIR, "context_eval.json");
 const PORT = Number(process.env.HARNESS_PORT || 8090);
 const EXPECTED_RESPONSE_CHUNKS = Number(process.env.MOCK_RESPONSE_CHUNKS || 12);
 
@@ -52,6 +54,11 @@ async function readVisionFixture() {
   }
 
   return payload;
+}
+
+async function writeContextEvalArtifact(payload) {
+  await fs.mkdir(ARTIFACT_DIR, { recursive: true });
+  await fs.writeFile(CONTEXT_EVAL_PATH, JSON.stringify(payload, null, 2));
 }
 
 function parseWavPcm16Mono(buffer) {
@@ -144,6 +151,58 @@ function waitForOpen(ws, timeoutMs = 5000) {
       reject(error);
     });
   });
+}
+
+async function sendVisionFrame(ws, sessionId, frame) {
+  ws.send(
+    JSON.stringify({
+      type: "realtime_input",
+      sessionId,
+      modality: "vision",
+      imageBase64: frame.imageBase64,
+      mimeType: frame.mimeType || "image/jpeg",
+      width: frame.width || 1280,
+      height: frame.height || 720,
+      frameIndex: frame.frameIndex || null,
+      mockScene: frame.mockScene || null,
+      metadata: frame.metadata || {}
+    })
+  );
+
+  await waitForMessage(
+    ws,
+    (message) => {
+      return (
+        message.type === "vision_input_ack" &&
+        message.sessionId === sessionId &&
+        Number(message.frameIndex) === Number(frame.frameIndex)
+      );
+    },
+    5000
+  );
+}
+
+async function sendPromptAndMeasure(ws, sessionId, text, timeoutMs = 7000) {
+  const startedAt = Date.now();
+  ws.send(
+    JSON.stringify({
+      type: "user_text",
+      sessionId,
+      text
+    })
+  );
+
+  const answer = await waitForMessage(
+    ws,
+    (message) => message.type === "text_output" && message.sessionId === sessionId,
+    timeoutMs
+  );
+
+  return {
+    prompt: text,
+    responseText: answer.text,
+    latencyMs: Date.now() - startedAt
+  };
 }
 
 async function sendAudioFrames(ws, sessionId, frames, sampleRateHz, channels, delayMs = 20) {
@@ -292,62 +351,305 @@ async function runVisionScenario(ws, sessionId) {
   const fixture = await readVisionFixture();
 
   for (const frame of fixture.frames) {
-    ws.send(
-      JSON.stringify({
-        type: "realtime_input",
-        sessionId,
-        modality: "vision",
-        imageBase64: frame.imageBase64,
-        mimeType: frame.mimeType || "image/jpeg",
-        width: frame.width || 1280,
-        height: frame.height || 720,
-        frameIndex: frame.frameIndex,
-        mockScene: frame.mockScene,
-        metadata: frame.metadata || {}
-      })
-    );
-
-    await waitForMessage(
-      ws,
-      (message) => {
-        return (
-          message.type === "vision_input_ack" &&
-          message.sessionId === sessionId &&
-          Number(message.frameIndex) === Number(frame.frameIndex)
-        );
-      },
-      5000
-    );
-
+    await sendVisionFrame(ws, sessionId, frame);
     await sleep(80);
   }
 
-  ws.send(
-    JSON.stringify({
-      type: "user_text",
-      sessionId,
-      text: "What do you see?"
-    })
-  );
+  const answer = await sendPromptAndMeasure(ws, sessionId, "What do you see?");
 
-  const answer = await waitForMessage(
-    ws,
-    (message) => message.type === "text_output" && message.sessionId === sessionId,
-    7000
-  );
-
-  const responseText = String(answer.text || "").toLowerCase();
+  const responseText = String(answer.responseText || "").toLowerCase();
   const requiredTokens = ["sign in", "dashboard", "settings"];
 
   const missing = requiredTokens.filter((token) => !responseText.includes(token));
   if (missing.length > 0) {
     throw new Error(
-      `Vision response missing required elements: ${missing.join(", ")}. Response was: ${answer.text}`
+      `Vision response missing required elements: ${missing.join(", ")}. Response was: ${answer.responseText}`
     );
   }
 
   return {
-    responseText: answer.text
+    responseText: answer.responseText,
+    latencyMs: answer.latencyMs
+  };
+}
+
+async function runFocusedContextComparisonScenario(ws, sessionId) {
+  const baseFrame = {
+    frameIndex: 101,
+    mockScene: "dashboard",
+    mimeType: "image/jpeg",
+    width: 1280,
+    height: 720,
+    imageBase64: "TU9DS19GT0NVU19CQVNFTElORQ==",
+    metadata: {
+      pageTitle: "Mail",
+      pageUrl: "https://example.com/mail",
+      headingHints: ["Inbox"],
+      buttonHints: ["Compose"]
+    }
+  };
+
+  const enrichedFrame = {
+    frameIndex: 102,
+    mockScene: "dashboard",
+    mimeType: "image/jpeg",
+    width: 1280,
+    height: 720,
+    imageBase64: "TU9DS19GT0NVU19FTlJJQ0hFRA==",
+    metadata: {
+      pageTitle: "Mail",
+      pageUrl: "https://example.com/mail",
+      pageLanguage: "en",
+      browserLanguage: "en-US",
+      viewport: {
+        width: 1280,
+        height: 720,
+        scrollX: 0,
+        scrollY: 100
+      },
+      focusedElement: {
+        tag: "input",
+        role: "searchbox",
+        type: "search",
+        label: "Search mail",
+        disabled: false,
+        readOnly: false,
+        sensitive: false,
+        bounds: {
+          x: 620,
+          y: 80,
+          width: 420,
+          height: 40
+        }
+      },
+      headingHints: ["Inbox"],
+      buttonHints: ["Compose"]
+    }
+  };
+
+  await sendVisionFrame(ws, sessionId, baseFrame);
+  const baseline = await sendPromptAndMeasure(ws, sessionId, "What field am I in?");
+
+  if (!String(baseline.responseText || "").toLowerCase().includes("cannot tell which field is focused")) {
+    throw new Error(`Expected weak baseline focus response, received: ${baseline.responseText}`);
+  }
+
+  await sendVisionFrame(ws, sessionId, enrichedFrame);
+  const enriched = await sendPromptAndMeasure(ws, sessionId, "What field am I in?");
+  const enrichedText = String(enriched.responseText || "").toLowerCase();
+
+  if (!enrichedText.includes("search mail") || !enrichedText.includes("searchbox")) {
+    throw new Error(`Expected enriched focus response to identify search field, received: ${enriched.responseText}`);
+  }
+
+  return {
+    baseline: {
+      metadata: baseFrame.metadata,
+      ...baseline
+    },
+    enriched: {
+      metadata: enrichedFrame.metadata,
+      ...enriched
+    }
+  };
+}
+
+async function runSensitiveFieldScenario(ws, sessionId) {
+  const sensitiveFrame = {
+    frameIndex: 103,
+    mockScene: "sign_in",
+    mimeType: "image/jpeg",
+    width: 1280,
+    height: 720,
+    imageBase64: "TU9DS19TRU5TSVRJVkVfRklFTEQ=",
+    metadata: {
+      pageTitle: "Sign In",
+      pageUrl: "https://example.com/signin",
+      pageLanguage: "en",
+      browserLanguage: "en-US",
+      viewport: {
+        width: 1280,
+        height: 720,
+        scrollX: 0,
+        scrollY: 0
+      },
+      focusedElement: {
+        tag: "input",
+        role: "textbox",
+        type: "password",
+        label: null,
+        disabled: false,
+        readOnly: false,
+        sensitive: true,
+        bounds: {
+          x: 500,
+          y: 260,
+          width: 280,
+          height: 36
+        }
+      },
+      headingHints: ["Sign In"],
+      buttonHints: ["Continue"]
+    }
+  };
+
+  await sendVisionFrame(ws, sessionId, sensitiveFrame);
+  const response = await sendPromptAndMeasure(ws, sessionId, "What field am I in?");
+  const normalized = String(response.responseText || "").toLowerCase();
+
+  if (!normalized.includes("sensitive input field")) {
+    throw new Error(`Expected sensitive-field privacy response, received: ${response.responseText}`);
+  }
+
+  if (normalized.includes("password")) {
+    throw new Error(`Sensitive response should stay generic, received: ${response.responseText}`);
+  }
+
+  return {
+    metadata: sensitiveFrame.metadata,
+    ...response
+  };
+}
+
+async function runStateChangeScenario(ws, sessionId) {
+  const beforeFrame = {
+    frameIndex: 104,
+    mockScene: "sign_in",
+    mimeType: "image/jpeg",
+    width: 1280,
+    height: 720,
+    imageBase64: "TU9DS19TVEFURV9DSEFOR0VfQkVGT1JF",
+    metadata: {
+      pageTitle: "Sign In",
+      pageUrl: "https://example.com/signin",
+      headingHints: ["Sign In"],
+      buttonHints: ["Sign In"]
+    }
+  };
+
+  const afterFrame = {
+    frameIndex: 105,
+    mockScene: "dashboard",
+    mimeType: "image/jpeg",
+    width: 1280,
+    height: 720,
+    imageBase64: "TU9DS19TVEFURV9DSEFOR0VfQUZURVI=",
+    metadata: {
+      pageTitle: "Dashboard",
+      pageUrl: "https://example.com/dashboard",
+      headingHints: ["Dashboard"],
+      buttonHints: ["Create report"]
+    }
+  };
+
+  await sendVisionFrame(ws, sessionId, beforeFrame);
+  await sendVisionFrame(ws, sessionId, afterFrame);
+  const response = await sendPromptAndMeasure(ws, sessionId, "Did that work? What changed?");
+  const normalized = String(response.responseText || "").toLowerCase();
+
+  if (!normalized.includes("changed from sign in to dashboard")) {
+    throw new Error(`Expected state-change response, received: ${response.responseText}`);
+  }
+
+  return {
+    beforeMetadata: beforeFrame.metadata,
+    afterMetadata: afterFrame.metadata,
+    ...response
+  };
+}
+
+async function runNavigationEventComparisonScenario(ws, sessionId) {
+  const baselineBeforeFrame = {
+    frameIndex: 106,
+    mockScene: "dashboard",
+    mimeType: "image/jpeg",
+    width: 1280,
+    height: 720,
+    imageBase64: "TU9DS19OQVZfQkVGT1JFX0JBU0VMSU5F",
+    metadata: {
+      pageTitle: "Mail",
+      pageUrl: "https://mail.google.com/mail/u/0/",
+      headingHints: ["Inbox"],
+      buttonHints: ["Compose"]
+    }
+  };
+
+  const baselineAfterFrame = {
+    frameIndex: 107,
+    mockScene: "dashboard",
+    mimeType: "image/jpeg",
+    width: 1280,
+    height: 720,
+    imageBase64: "TU9DS19OQVZfQUZURVJfQkFTRUxJTkU=",
+    metadata: {
+      pageTitle: "Mail",
+      pageUrl: "https://mail.google.com/mail/u/0/",
+      headingHints: ["Inbox"],
+      buttonHints: ["Compose"]
+    }
+  };
+
+  const enrichedAfterFrame = {
+    frameIndex: 108,
+    mockScene: "dashboard",
+    mimeType: "image/jpeg",
+    width: 1280,
+    height: 720,
+    imageBase64: "TU9DS19OQVZfQUZURVJfRU5SSUNIRUQ=",
+    metadata: {
+      pageTitle: "Mail",
+      pageUrl: "https://mail.google.com/mail/u/0/",
+      headingHints: ["Inbox"],
+      buttonHints: ["Compose"],
+      recentNavigationEvents: [
+        {
+          kind: "navigation",
+          phase: "committed",
+          urlSummary: "https://mail.google.com/mail/u/0/#sent",
+          title: "Sent",
+          ts: Date.now() - 200
+        },
+        {
+          kind: "navigation",
+          phase: "completed",
+          urlSummary: "https://mail.google.com/mail/u/0/#sent",
+          title: "Sent",
+          ts: Date.now() - 100
+        }
+      ]
+    }
+  };
+
+  await sendVisionFrame(ws, sessionId, baselineBeforeFrame);
+  await sendVisionFrame(ws, sessionId, baselineAfterFrame);
+  const baseline = await sendPromptAndMeasure(ws, sessionId, "Did that work? What changed?");
+  const baselineText = String(baseline.responseText || "").toLowerCase();
+
+  if (!baselineText.includes("do not detect a strong page-state change")) {
+    throw new Error(
+      `Expected weak baseline navigation response, received: ${baseline.responseText}`
+    );
+  }
+
+  await sendVisionFrame(ws, sessionId, enrichedAfterFrame);
+  const enriched = await sendPromptAndMeasure(ws, sessionId, "Did that work? What changed?");
+  const enrichedText = String(enriched.responseText || "").toLowerCase();
+
+  if (!enrichedText.includes("recent navigation update") || !enrichedText.includes("#sent")) {
+    throw new Error(
+      `Expected navigation-summary response to mention recent navigation, received: ${enriched.responseText}`
+    );
+  }
+
+  return {
+    baseline: {
+      metadata: baselineAfterFrame.metadata,
+      ...baseline
+    },
+    enriched: {
+      metadata: enrichedAfterFrame.metadata,
+      ...enriched
+    }
   };
 }
 
@@ -579,6 +881,10 @@ async function run() {
 
     const vision = await runVisionScenario(ws, sessionId);
     const toolLoopback = await runToolLoopbackScenario(ws, sessionId);
+    const focusComparison = await runFocusedContextComparisonScenario(ws, sessionId);
+    const sensitiveFocus = await runSensitiveFieldScenario(ws, sessionId);
+    const stateChange = await runStateChangeScenario(ws, sessionId);
+    const navigationComparison = await runNavigationEventComparisonScenario(ws, sessionId);
     const visionStopped = await runVisionStoppedScenario(ws, sessionId);
     const persistedToolCall = await waitForToolCallPersistence(
       sessionId,
@@ -586,16 +892,40 @@ async function run() {
     );
     const audio = await runInterruptionScenario(ws, sessionId, parsedWav);
 
+    await writeContextEvalArtifact({
+      generatedAt: new Date().toISOString(),
+      sessionId,
+      mode: "mock",
+      scenarios: {
+        vision,
+        focusComparison,
+        sensitiveFocus,
+        stateChange,
+        navigationComparison,
+        visionStopped,
+        audio
+      }
+    });
+
     ws.close();
 
     console.log(`Harness vision check passed: ${vision.responseText}`);
     console.log(
       `Harness tool loopback passed: action=${toolLoopback.commandMessage.action} x=${toolLoopback.commandMessage.args.x} y=${toolLoopback.commandMessage.args.y} status=${persistedToolCall.status}`
     );
+    console.log(
+      `Harness focus comparison passed: baseline=${focusComparison.baseline.latencyMs}ms enriched=${focusComparison.enriched.latencyMs}ms`
+    );
+    console.log(`Harness sensitive focus guard passed: ${sensitiveFocus.responseText}`);
+    console.log(`Harness state change check passed: ${stateChange.responseText}`);
+    console.log(
+      `Harness navigation comparison passed: baseline=${navigationComparison.baseline.latencyMs}ms enriched=${navigationComparison.enriched.latencyMs}ms`
+    );
     console.log(`Harness vision stop guard passed: ${visionStopped.responseText}`);
     console.log(
       `Harness audio barge-in passed: firstStreamChunks=${audio.firstStreamChunks}, secondStreamChunks=${audio.secondStreamChunks}`
     );
+    console.log(`Context evaluation artifact written to ${CONTEXT_EVAL_PATH}`);
   } finally {
     backend.kill("SIGTERM");
   }

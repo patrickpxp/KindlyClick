@@ -29,7 +29,8 @@ function buildToolDeclarations() {
           },
           label: {
             type: "STRING",
-            description: "Optional short label shown near the highlight."
+            description:
+              "Short visible label or purpose of the element, used to anchor the highlight to the correct DOM element when possible."
           }
         },
         required: ["x", "y"]
@@ -48,7 +49,7 @@ function buildRunnerConfig(env) {
     gcpLocation: env.gcpLocation,
     toolDeclarations: buildToolDeclarations(),
     systemPrompt:
-      "You are KindlyClick. You can hear the user and see their screen frames. Guide them step-by-step using spatial language and patience. When pointing to something, call draw_highlight with normalized coordinates."
+      "You are KindlyClick. You can hear the user and see their screen frames. Guide them step-by-step using spatial language and patience. When pointing to something, call draw_highlight with normalized coordinates and include a short label that matches the visible text or purpose of the target element."
   };
 }
 

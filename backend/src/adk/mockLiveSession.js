@@ -114,6 +114,15 @@ function isVisionDependentPrompt(lowerPrompt) {
   );
 }
 
+function normalizeText(value, maxLength = 80) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return "";
+  }
+
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
 class MockLiveSession {
   constructor({ sessionId, onEvent, options }) {
     this.sessionId = sessionId;
@@ -272,6 +281,32 @@ class MockLiveSession {
       return;
     }
 
+    if (
+      lowerPrompt.includes("what field am i in") ||
+      lowerPrompt.includes("which field am i in") ||
+      lowerPrompt.includes("what should i type here next")
+    ) {
+      this.onEvent({
+        type: "text_output",
+        responseId: this.#nextResponseId(),
+        text: this.#describeFocusedElement(lowerPrompt)
+      });
+      return;
+    }
+
+    if (
+      lowerPrompt.includes("did that work") ||
+      lowerPrompt.includes("what changed") ||
+      lowerPrompt.includes("what happened after")
+    ) {
+      this.onEvent({
+        type: "text_output",
+        responseId: this.#nextResponseId(),
+        text: this.#describeRecentStateChange()
+      });
+      return;
+    }
+
     this.onEvent({
       type: "text_output",
       responseId: this.#nextResponseId(),
@@ -295,6 +330,101 @@ class MockLiveSession {
     ).join(", ");
 
     return `${lines.join(" ")} Key elements I can identify: ${aggregateElements}.`;
+  }
+
+  #getLatestFrame() {
+    return this.visionFrames.length > 0 ? this.visionFrames[this.visionFrames.length - 1] : null;
+  }
+
+  #getPreviousFrame() {
+    return this.visionFrames.length > 1 ? this.visionFrames[this.visionFrames.length - 2] : null;
+  }
+
+  #describeFocusedElement(lowerPrompt) {
+    const latestFrame = this.#getLatestFrame();
+    const focusedElement = latestFrame?.metadata?.focusedElement || null;
+
+    if (!focusedElement || !focusedElement.tag) {
+      return "I can see the screen, but I cannot tell which field is focused from the current screen context.";
+    }
+
+    const role = normalizeText(focusedElement.role || "", 24);
+    const type = normalizeText(focusedElement.type || "", 24);
+    const label = normalizeText(focusedElement.label || "", 60);
+    const descriptorParts = [normalizeText(focusedElement.tag || "", 24), role, type].filter(Boolean);
+    const descriptor = descriptorParts.join(" ");
+
+    if (focusedElement.sensitive) {
+      return "You are currently focused in a sensitive input field. I can help you move through the page, but I will not repeat the field contents.";
+    }
+
+    if (lowerPrompt.includes("type here next")) {
+      if (label) {
+        return `You are focused in the ${label} ${descriptor}. The next step is to type the information that field is asking for.`;
+      }
+
+      return `You are focused in a ${descriptor}. The next step is to type the information requested by that field.`;
+    }
+
+    if (label) {
+      return `You are currently focused in the ${label} ${descriptor}.`;
+    }
+
+    return `You are currently focused in a ${descriptor}.`;
+  }
+
+  #describeRecentStateChange() {
+    const latestFrame = this.#getLatestFrame();
+    const previousFrame = this.#getPreviousFrame();
+
+    if (!latestFrame) {
+      return "I cannot currently see your screen. Please start vision sharing so I can help with on-screen guidance.";
+    }
+
+    if (!previousFrame) {
+      return "I can see the current screen, but I do not have an earlier frame to compare against yet.";
+    }
+
+    const recentNavigationEvents = Array.isArray(latestFrame.metadata?.recentNavigationEvents)
+      ? latestFrame.metadata.recentNavigationEvents
+      : [];
+    const latestNavigationEvent =
+      recentNavigationEvents.length > 0
+        ? recentNavigationEvents[recentNavigationEvents.length - 1]
+        : null;
+    const navigationPhase = normalizeText(latestNavigationEvent?.phase || "", 20);
+    const navigationUrl = normalizeText(
+      latestNavigationEvent?.urlSummary || latestNavigationEvent?.url_summary || "",
+      80
+    );
+    const navigationTitle = normalizeText(latestNavigationEvent?.title || "", 50);
+
+    if (navigationPhase && navigationUrl) {
+      return navigationTitle
+        ? `Yes, there was a recent navigation update: ${navigationPhase} ${navigationUrl} (${navigationTitle}).`
+        : `Yes, there was a recent navigation update: ${navigationPhase} ${navigationUrl}.`;
+    }
+
+    const latestTitle = normalizeText(latestFrame.metadata?.pageTitle || latestFrame.sceneLabel, 80);
+    const previousTitle = normalizeText(previousFrame.metadata?.pageTitle || previousFrame.sceneLabel, 80);
+
+    if (latestTitle && previousTitle && latestTitle !== previousTitle) {
+      return `Yes, the page state changed from ${previousTitle} to ${latestTitle}.`;
+    }
+
+    const latestHeadings = Array.isArray(latestFrame.metadata?.headingHints)
+      ? latestFrame.metadata.headingHints.map((value) => normalizeText(value, 40)).filter(Boolean)
+      : [];
+    const previousHeadings = Array.isArray(previousFrame.metadata?.headingHints)
+      ? previousFrame.metadata.headingHints.map((value) => normalizeText(value, 40)).filter(Boolean)
+      : [];
+
+    const newHeading = latestHeadings.find((heading) => !previousHeadings.includes(heading));
+    if (newHeading) {
+      return `Yes, something changed. A new visible section appeared: ${newHeading}.`;
+    }
+
+    return "I can see the current screen, but I do not detect a strong page-state change from the recent frames.";
   }
 
   #isVisionAvailable() {

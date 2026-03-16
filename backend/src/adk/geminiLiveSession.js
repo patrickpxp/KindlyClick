@@ -130,6 +130,177 @@ function normalizeCoordinateValue(rawValue) {
   return parsed;
 }
 
+function normalizeShortText(value, maxLength = 80) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return "";
+  }
+
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function normalizeInteger(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return Math.round(parsed);
+}
+
+function normalizeScrollValue(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return Math.round(parsed / 100) * 100;
+}
+
+function formatList(values, limit = 3) {
+  const normalized = Array.isArray(values)
+    ? values.map((value) => normalizeShortText(value, 40)).filter(Boolean).slice(0, limit)
+    : [];
+
+  return normalized.length > 0 ? normalized.join(", ") : "";
+}
+
+function formatRecentNavigationEvents(events, limit = 3) {
+  const normalizedEvents = Array.isArray(events) ? events.slice(-limit) : [];
+  const formatted = normalizedEvents
+    .map((event) => {
+      if (!event || typeof event !== "object") {
+        return "";
+      }
+
+      const phase = normalizeShortText(event.phase, 20);
+      const urlSummary = normalizeShortText(event.urlSummary || event.url_summary, 80);
+      const title = normalizeShortText(event.title, 50);
+      if (!phase || !urlSummary) {
+        return "";
+      }
+
+      return title ? `${phase} ${urlSummary} (${title})` : `${phase} ${urlSummary}`;
+    })
+    .filter(Boolean);
+
+  return formatted.length > 0 ? formatted.join(" | ") : "";
+}
+
+function buildVisionContextNote(metadata = {}) {
+  if (!metadata || typeof metadata !== "object") {
+    return "";
+  }
+
+  const segments = [];
+  const pageTitle = normalizeShortText(metadata.pageTitle, 100);
+  const browserLanguage = normalizeShortText(metadata.browserLanguage, 20);
+  const pageLanguage = normalizeShortText(metadata.pageLanguage, 20);
+  const viewport = metadata.viewport && typeof metadata.viewport === "object" ? metadata.viewport : null;
+  const focusedElement =
+    metadata.focusedElement && typeof metadata.focusedElement === "object"
+      ? metadata.focusedElement
+      : null;
+
+  if (pageTitle) {
+    segments.push(`page title: ${pageTitle}`);
+  }
+
+  if (pageLanguage) {
+    segments.push(`page language: ${pageLanguage}`);
+  }
+
+  if (browserLanguage) {
+    segments.push(`browser language: ${browserLanguage}`);
+  }
+
+  if (viewport) {
+    const width = normalizeInteger(viewport.width);
+    const height = normalizeInteger(viewport.height);
+    const scrollX = normalizeScrollValue(viewport.scrollX);
+    const scrollY = normalizeScrollValue(viewport.scrollY);
+    const viewportParts = [];
+
+    if (width && height) {
+      viewportParts.push(`size ${width}x${height}`);
+    }
+
+    if (scrollX !== null || scrollY !== null) {
+      viewportParts.push(`scroll ${scrollX || 0},${scrollY || 0}`);
+    }
+
+    if (viewportParts.length > 0) {
+      segments.push(`viewport: ${viewportParts.join(" ")}`);
+    }
+  }
+
+  if (focusedElement) {
+    const focusParts = [];
+    const tag = normalizeShortText(focusedElement.tag, 24);
+    const role = normalizeShortText(focusedElement.role, 24);
+    const type = normalizeShortText(focusedElement.type, 24);
+    const label = normalizeShortText(focusedElement.label, 60);
+    const bounds =
+      focusedElement.bounds && typeof focusedElement.bounds === "object" ? focusedElement.bounds : null;
+
+    if (tag) {
+      focusParts.push(`tag=${tag}`);
+    }
+    if (role) {
+      focusParts.push(`role=${role}`);
+    }
+    if (type) {
+      focusParts.push(`type=${type}`);
+    }
+    if (focusedElement.sensitive) {
+      focusParts.push("sensitive=true");
+    } else if (label) {
+      focusParts.push(`label="${label}"`);
+    }
+    if (focusedElement.disabled) {
+      focusParts.push("disabled=true");
+    }
+    if (focusedElement.readOnly) {
+      focusParts.push("readonly=true");
+    }
+    if (bounds) {
+      const x = normalizeInteger(bounds.x);
+      const y = normalizeInteger(bounds.y);
+      const width = normalizeInteger(bounds.width);
+      const height = normalizeInteger(bounds.height);
+
+      if (x !== null && y !== null && width !== null && height !== null) {
+        focusParts.push(`bounds=${x},${y},${width}x${height}`);
+      }
+    }
+
+    if (focusParts.length > 0) {
+      segments.push(`focused element: ${focusParts.join(" ")}`);
+    }
+  }
+
+  const headingHints = formatList(metadata.headingHints, 3);
+  if (headingHints) {
+    segments.push(`visible headings: ${headingHints}`);
+  }
+
+  const buttonHints = formatList(metadata.buttonHints, 3);
+  if (buttonHints) {
+    segments.push(`visible buttons: ${buttonHints}`);
+  }
+
+  const recentNavigationEvents = formatRecentNavigationEvents(metadata.recentNavigationEvents, 3);
+  if (recentNavigationEvents) {
+    segments.push(`recent navigation: ${recentNavigationEvents}`);
+  }
+
+  if (segments.length === 0) {
+    return "";
+  }
+
+  return `Extension screen context: ${segments.join("; ")}.`;
+}
+
 function extractFunctionCalls({ message, serverContent, parts }) {
   const calls = [];
 
@@ -227,6 +398,7 @@ class GeminiLiveSession {
     this.lastVisionFrameAt = null;
     this.visionFrameTtlMs = Number(this.options.visionFrameTtlMs || 5000);
     this.lastVisionStatusNote = null;
+    this.lastVisionContextNote = "";
   }
 
   async #connect() {
@@ -502,6 +674,28 @@ class GeminiLiveSession {
     });
   }
 
+  #sendVisionMetadataContextNote(metadata = {}) {
+    const note = buildVisionContextNote(metadata);
+    if (!note || note === this.lastVisionContextNote) {
+      return;
+    }
+
+    this.lastVisionContextNote = note;
+
+    this.#withSession("sendClientContent(visionMetadata)", (session) => {
+      session.sendClientContent({
+        turns: [
+          {
+            role: "user",
+            parts: [{ text: note }]
+          }
+        ],
+        // Context update only; do not force immediate model response.
+        turnComplete: false
+      });
+    });
+  }
+
   #isVisionAvailable() {
     if (!this.visionActive || !this.hasVisionFrame || !this.lastVisionFrameAt) {
       return false;
@@ -524,6 +718,7 @@ class GeminiLiveSession {
     this.visionActive = false;
     this.lastVisionFrameAt = null;
     this.#sendVisionStatusContextNote(false);
+    this.lastVisionContextNote = "";
   }
 
   #handleServerMessage(rawMessage) {
@@ -676,6 +871,7 @@ class GeminiLiveSession {
     this.hasVisionFrame = true;
     this.lastVisionFrameAt = Date.now();
     this.#sendVisionStatusContextNote(true);
+    this.#sendVisionMetadataContextNote(metadata);
 
     const imageBlob = {
       data: imageBytes.toString("base64"),
@@ -718,6 +914,7 @@ class GeminiLiveSession {
       this.lastVisionFrameAt = null;
       this.hasVisionFrame = false;
       this.#sendVisionStatusContextNote(false);
+      this.lastVisionContextNote = "";
     }
   }
 
