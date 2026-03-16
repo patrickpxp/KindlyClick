@@ -2,6 +2,16 @@
 
 Updated from the repository state on March 11, 2026.
 
+## Status
+
+Completed through:
+
+- T13 `T13_INTERACTION_LOOP_HARDENING.md`
+
+Current next item:
+
+- T15 `Apply selective maintainability improvements`
+
 ## Purpose
 
 This file is the ordered working backlog for discussing and executing improvements to KindlyClick while keeping each turn small enough for a separate coding agent.
@@ -170,6 +180,7 @@ Each item includes:
   - session persistence depth
   - debugging and observability
 - Exit criteria: The system behaves more predictably under real usage and provides enough traceability to diagnose failures.
+- Status: Complete. See `T13_INTERACTION_LOOP_HARDENING.md`.
 
 ### T14. Run structured user testing
 
@@ -177,6 +188,7 @@ Each item includes:
 - Why now: At this point we should have a coherent enough experience to test with target users instead of shifting prototypes.
 - Deliverable: A compact test report from structured sessions with representative users or proxies.
 - Exit criteria: We have evidence about whether the interaction model is genuinely helping and what the next product priorities should be.
+- Status: Skipped for now due project time constraints. Keep `T14_STRUCTURED_USER_TESTING_PLAN.md` as a future-ready plan.
 
 ### T15. Apply selective maintainability improvements
 
@@ -187,6 +199,7 @@ Each item includes:
   - stricter protocol schemas
   - validation and test improvements
 - Exit criteria: The highest-risk parts of the codebase become easier to evolve safely.
+- Status: Next item.
 
 ### T16. Redesign the extension UI
 

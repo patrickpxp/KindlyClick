@@ -151,6 +151,18 @@ function createWebSocketHandler({ sessionManager, adkState, env, logger = consol
             return;
           }
 
+          if (event.type === "debug_trace") {
+            send({
+              type: "trace_event",
+              sessionId: state.sessionId,
+              scope: event.scope || "unknown",
+              event: event.event || "unknown",
+              data: event.data && typeof event.data === "object" ? event.data : {},
+              ts: event.ts || Date.now()
+            });
+            return;
+          }
+
           if (event.type === "tool_command") {
             const command = event.command || {};
 

@@ -31,6 +31,57 @@
     return parsed.toString();
   }
 
+  function formatTraceEvent(message) {
+    if (!message || typeof message !== "object") {
+      return "";
+    }
+
+    if (message.type !== "trace_event") {
+      return "";
+    }
+
+    const scope = String(message.scope || "unknown");
+    const event = String(message.event || "unknown");
+    const data = message.data && typeof message.data === "object" ? message.data : {};
+
+    if (scope === "gemini_live_session" && event === "barge_in_detected") {
+      const interruptedStreamId = data.interruptedStreamId ? ` stream=${data.interruptedStreamId}` : "";
+      const source = data.source ? ` source=${data.source}` : "";
+      return `trace barge_in_detected${source}${interruptedStreamId}`;
+    }
+
+    if (scope === "gemini_live_session" && event === "barge_in_output_continued") {
+      const interruptedStreamId = data.interruptedStreamId ? ` stream=${data.interruptedStreamId}` : "";
+      const elapsedMs = Number.isFinite(Number(data.elapsedMs))
+        ? ` after=${Math.round(Number(data.elapsedMs))}ms`
+        : "";
+      return `trace barge_in_output_continued${interruptedStreamId}${elapsedMs}`;
+    }
+
+    if (scope === "gemini_live_session" && event === "barge_in_resolved") {
+      const interruptedStreamId = data.interruptedStreamId ? ` stream=${data.interruptedStreamId}` : "";
+      const continuedChunkCount = Number.isFinite(Number(data.continuedChunkCount))
+        ? ` continued_chunks=${Math.round(Number(data.continuedChunkCount))}`
+        : "";
+      const totalDurationMs = Number.isFinite(Number(data.totalDurationMs))
+        ? ` duration=${Math.round(Number(data.totalDurationMs))}ms`
+        : "";
+      const endReason = data.endReason ? ` end=${data.endReason}` : "";
+      return `trace barge_in_resolved${interruptedStreamId}${continuedChunkCount}${totalDurationMs}${endReason}`;
+    }
+
+    const keys = Object.keys(data);
+    if (keys.length === 0) {
+      return `trace ${scope}.${event}`;
+    }
+
+    const serializedData = keys
+      .slice(0, 4)
+      .map((key) => `${key}=${String(data[key])}`)
+      .join(" ");
+    return `trace ${scope}.${event} ${serializedData}`.trim();
+  }
+
   function describeMicStream(stream, fallbackState = "unknown") {
     const base = {
       state: fallbackState,
@@ -599,6 +650,14 @@
 
       if (message.type === "vad_event") {
         this.log(`vad_event=${message.event}`);
+        return;
+      }
+
+      if (message.type === "trace_event") {
+        const traceText = formatTraceEvent(message);
+        if (traceText) {
+          this.log(traceText);
+        }
         return;
       }
 

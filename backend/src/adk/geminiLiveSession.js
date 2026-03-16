@@ -399,6 +399,7 @@ class GeminiLiveSession {
     this.visionFrameTtlMs = Number(this.options.visionFrameTtlMs || 5000);
     this.lastVisionStatusNote = null;
     this.lastVisionContextNote = "";
+    this.activeBargeIn = null;
   }
 
   async #connect() {
@@ -545,6 +546,11 @@ class GeminiLiveSession {
       return;
     }
 
+    this.#finalizeBargeInTelemetry({
+      streamId: this.activeOutputStreamId,
+      endReason: reason
+    });
+
     this.onEvent({
       type: "audio_output_end",
       streamId: this.activeOutputStreamId,
@@ -556,7 +562,80 @@ class GeminiLiveSession {
     this.clearBufferSentForActiveStream = false;
   }
 
-  #emitBargeIn(interruptedStreamId = null) {
+  #emitTrace(event, data = {}) {
+    this.onEvent({
+      type: "debug_trace",
+      scope: "gemini_live_session",
+      event,
+      data,
+      ts: Date.now()
+    });
+  }
+
+  #startBargeInTelemetry({ source, interruptedStreamId = null } = {}) {
+    const nextTelemetry = {
+      source: String(source || "unknown"),
+      interruptedStreamId: interruptedStreamId || null,
+      detectedAt: Date.now(),
+      clearSent: Boolean(interruptedStreamId),
+      continuedChunkCount: 0,
+      firstContinuedChunkAt: null
+    };
+
+    this.activeBargeIn = nextTelemetry;
+
+    this.#emitTrace("barge_in_detected", {
+      source: nextTelemetry.source,
+      interruptedStreamId: nextTelemetry.interruptedStreamId,
+      clearSent: nextTelemetry.clearSent
+    });
+  }
+
+  #recordContinuedOutputAfterBargeIn(streamId) {
+    if (!this.activeBargeIn || !streamId || this.activeBargeIn.interruptedStreamId !== streamId) {
+      return;
+    }
+
+    this.activeBargeIn.continuedChunkCount += 1;
+
+    if (!this.activeBargeIn.firstContinuedChunkAt) {
+      this.activeBargeIn.firstContinuedChunkAt = Date.now();
+      this.#emitTrace("barge_in_output_continued", {
+        interruptedStreamId: streamId,
+        source: this.activeBargeIn.source,
+        elapsedMs: this.activeBargeIn.firstContinuedChunkAt - this.activeBargeIn.detectedAt
+      });
+    }
+  }
+
+  #finalizeBargeInTelemetry({ streamId = null, endReason = "completed" } = {}) {
+    if (!this.activeBargeIn) {
+      return;
+    }
+
+    const telemetry = this.activeBargeIn;
+    if (telemetry.interruptedStreamId && streamId && telemetry.interruptedStreamId !== streamId) {
+      return;
+    }
+
+    this.#emitTrace("barge_in_resolved", {
+      source: telemetry.source,
+      interruptedStreamId: telemetry.interruptedStreamId,
+      clearSent: telemetry.clearSent,
+      continuedChunkCount: telemetry.continuedChunkCount,
+      firstContinuedChunkDelayMs: telemetry.firstContinuedChunkAt
+        ? telemetry.firstContinuedChunkAt - telemetry.detectedAt
+        : null,
+      totalDurationMs: Date.now() - telemetry.detectedAt,
+      endReason
+    });
+
+    this.activeBargeIn = null;
+  }
+
+  #emitBargeIn({ source = "unknown", interruptedStreamId = null } = {}) {
+    this.#startBargeInTelemetry({ source, interruptedStreamId });
+
     this.onEvent({
       type: "user_speech_detected",
       vadMode: this.options.vadMode,
@@ -579,7 +658,10 @@ class GeminiLiveSession {
 
     const interruptedStreamId = this.activeOutputStreamId;
     this.clearBufferSentForActiveStream = true;
-    this.#emitBargeIn(interruptedStreamId);
+    this.#emitBargeIn({
+      source: "audio_input",
+      interruptedStreamId
+    });
   }
 
   #emitText(text) {
@@ -740,9 +822,15 @@ class GeminiLiveSession {
     if (detectedSpeechStart) {
       if (this.activeOutputStreamId && !this.clearBufferSentForActiveStream) {
         this.clearBufferSentForActiveStream = true;
-        this.#emitBargeIn(this.activeOutputStreamId);
+        this.#emitBargeIn({
+          source: "server_vad",
+          interruptedStreamId: this.activeOutputStreamId
+        });
       } else {
-        this.#emitBargeIn(null);
+        this.#emitBargeIn({
+          source: "server_vad",
+          interruptedStreamId: null
+        });
       }
     }
 
@@ -750,7 +838,10 @@ class GeminiLiveSession {
 
     if (serverContent?.interrupted && this.activeOutputStreamId && !this.clearBufferSentForActiveStream) {
       this.clearBufferSentForActiveStream = true;
-      this.#emitBargeIn(this.activeOutputStreamId);
+      this.#emitBargeIn({
+        source: "server_interrupted",
+        interruptedStreamId: this.activeOutputStreamId
+      });
     }
 
     const modelTurn = serverContent?.modelTurn || serverContent?.model_turn || null;
@@ -774,6 +865,10 @@ class GeminiLiveSession {
 
       const streamId = this.#ensureActiveOutputStreamId();
       this.outputChunkIndex += 1;
+
+      if (this.clearBufferSentForActiveStream) {
+        this.#recordContinuedOutputAfterBargeIn(streamId);
+      }
 
       this.onEvent({
         type: "audio_output",
@@ -946,6 +1041,10 @@ class GeminiLiveSession {
   close() {
     this.closed = true;
     this.pendingTextParts = [];
+    this.#finalizeBargeInTelemetry({
+      streamId: this.activeOutputStreamId,
+      endReason: "session_closed"
+    });
     this.activeOutputStreamId = null;
     this.outputChunkIndex = 0;
     this.clearBufferSentForActiveStream = false;
