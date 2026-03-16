@@ -1,0 +1,14 @@
+# Minimize Cloud Build uploads to only the files needed by Dockerfile.
+**
+
+!.gcloudignore
+!.dockerignore
+!Dockerfile
+!backend
+!backend/package.json
+!backend/package-lock.json
+!backend/src
+!backend/src/**
+!extension
+!extension/src
+!extension/src/runtimeProtocol.js

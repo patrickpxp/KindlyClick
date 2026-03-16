@@ -1,0 +1,7 @@
+project_id                     = "your-gcp-project-id"
+region                         = "us-central1"
+firestore_location             = "nam5"
+service_name                   = "kindlyclick-backend"
+artifact_registry_repository_id = "kindlyclick"
+deploy_cloud_run_service       = true
+container_image                = "us-central1-docker.pkg.dev/your-gcp-project-id/kindlyclick/backend:latest"

@@ -1,0 +1,13 @@
+# Minimize Docker build context to only the files copied by Dockerfile.
+**
+
+!.dockerignore
+!Dockerfile
+!backend
+!backend/package.json
+!backend/package-lock.json
+!backend/src
+!backend/src/**
+!extension
+!extension/src
+!extension/src/runtimeProtocol.js
