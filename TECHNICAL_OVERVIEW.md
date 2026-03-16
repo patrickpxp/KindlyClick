@@ -1,6 +1,6 @@
 # KindlyClick Technical Overview
 
-Updated from the repository state on March 16, 2026.
+Updated from the repository state on March 16, 2026, including the current deployed backend and extension connection flow.
 
 ## Purpose of this document
 
@@ -39,6 +39,12 @@ Main pieces:
 - `extension/request-mic.html`: helper page opened when the side panel cannot complete microphone permission flow directly.
 - `extension/onboarding.html`: first-run onboarding page that teaches pinning and opens the side panel.
 
+Current connection behavior:
+
+- the extension now permits remote secure backend connections via `wss://*` in the extension page CSP
+- the advanced `Backend WebSocket URL` field defaults to the currently deployed Cloud Run WebSocket endpoint
+- the side panel persists the last backend URL used, so reloads do not reset users back to localhost unless storage is cleared
+
 The most important architecture change from earlier milestones is that the side panel is no longer the runtime host. The offscreen document is.
 
 Practical effect:
@@ -73,7 +79,15 @@ Main pieces:
 
 ### 3. Infrastructure and tests
 
-Infrastructure is planned around Cloud Run plus Firestore, managed with Terraform.
+Infrastructure is now implemented around Cloud Run, Firestore, Artifact Registry, Cloud Build, and IAM, managed with Terraform.
+
+Current production footprint:
+
+- backend service deployed on Cloud Run
+- container image stored in Artifact Registry
+- image builds submitted through regional Cloud Build
+- runtime service account with Firestore and Vertex AI permissions
+- Firestore used for session and tool-call persistence
 
 Testing is a meaningful part of the project, not an afterthought:
 
@@ -110,15 +124,20 @@ The controller also uses a lightweight client-side RMS threshold to avoid starti
 3. Each frame is converted to a 1280x720 JPEG and sent as `realtime_input` with `modality: "vision"`.
 4. The extension also sends page metadata gathered from the active tab.
 
-Current metadata attached to vision frames is intentionally lightweight:
+Current metadata attached to vision frames is intentionally lightweight but richer than in earlier milestones:
 
+- browser language
 - page title
 - page URL
 - tab ID
+- recent navigation events
+- page language
+- viewport summary
+- focused element summary
 - a small list of heading texts
 - a small list of button texts
 
-This is not full DOM capture, not accessibility-tree capture, and not event-stream capture.
+This is still not full DOM capture, not accessibility-tree capture, and not a full browser interaction stream.
 
 ### Backend response loop
 
@@ -169,12 +188,11 @@ The highlight system already supports normalized coordinates and optional labels
 - minimal Firestore-backed session/tool-call persistence
 - environment-based switch between mock mode and real Gemini Live mode
 
-### Considered improvements and potential features on the roadmap we need to research before implementing.
+### Considered improvements and potential features that still need research
 
-1. does it help the Gemini Live agent to gather more context for our use case : I was thinking perhaps things like tab name, browser language , page meta ...  whatever useful and relevant information the browser extension could capture.
-2. in the same spirit as above, browser interaction event streaming such as clicks, scrolls, navigation transitions, or focus changes
-- robust disambiguation of background noise versus true user interruption
-- long-lived extension runtime independent of the side panel
+- whether the Gemini Live agent should receive even more browser context beyond the metadata already added, such as richer page state or selective semantic summaries
+- whether the system should add broader browser interaction streaming such as clicks, scrolls, focus changes, and tab switches
+- more robust disambiguation of background noise versus true user interruption
 - richer persistence beyond session metadata and tool-call history
 - product analytics, admin tooling, and production-grade observability
 - user-testing evidence that the current interaction pattern is genuinely effective for seniors
@@ -250,7 +268,7 @@ Relevant directions:
 
 Question: should the system stream user actions such as tab switches, clicks, or scrolls so the model can stay synchronized with what just happened?
 
-This is currently absent from the architecture.
+This is only partially present today. The extension already captures recent navigation events, but it does not yet stream a broader interaction timeline for clicks, scrolling, or focus changes.
 
 ### 3. Highlight tool evolution
 
@@ -294,4 +312,4 @@ Question: should the extension UI be redesigned now, or only after the runtime a
 
 ## Bottom line
 
-KindlyClick already has a real technical skeleton: a working Chrome extension, a backend protocol, a mock and real live-session path, a visual pointing tool, and harnesses for testing core interaction loops. The next phase is less about inventing the base architecture and more about deciding how far to push context capture, interruption quality, runtime robustness, and product validation.
+KindlyClick already has a real technical skeleton and a live deployment path: a working Chrome extension, a deployed Cloud Run backend, a mock and real live-session path, a visual pointing tool, and harnesses for testing core interaction loops. The next phase is less about inventing the base architecture and more about deciding how far to push context capture, interruption quality, runtime robustness, observability, and product validation.
