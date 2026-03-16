@@ -1,5 +1,6 @@
 const MIC_SELECTION_STORAGE_KEY = "kindlyclick:selectedMicDeviceId";
 const LOG_RELAY_STORAGE_KEY = "kindlyclick:logRelayEnabled";
+const WS_URL_STORAGE_KEY = "kindlyclick:wsUrl";
 const VISION_CAPTURE_WIDTH = 1280;
 const VISION_CAPTURE_HEIGHT = 720;
 const VISION_JPEG_QUALITY = 0.6;
@@ -371,6 +372,28 @@ function saveLogRelayEnabled(enabled) {
   }
 }
 
+function loadWsUrl(defaultValue = "") {
+  try {
+    return localStorage.getItem(WS_URL_STORAGE_KEY) || defaultValue;
+  } catch (_error) {
+    return defaultValue;
+  }
+}
+
+function saveWsUrl(wsUrl) {
+  try {
+    const normalizedValue = String(wsUrl || "").trim();
+    if (!normalizedValue) {
+      localStorage.removeItem(WS_URL_STORAGE_KEY);
+      return;
+    }
+
+    localStorage.setItem(WS_URL_STORAGE_KEY, normalizedValue);
+  } catch (_error) {
+    // Ignore persistence failures.
+  }
+}
+
 async function listAudioInputDevices() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
     return [];
@@ -457,6 +480,7 @@ async function getRuntimeState() {
 
 (function bootstrap() {
   const ui = createUi();
+  ui.wsUrl.value = loadWsUrl(ui.wsUrl.value);
   let selectedMicDeviceId = loadSelectedMicDeviceId();
   let logRelayEnabled = loadLogRelayEnabled();
   let runtimeState = createDefaultRuntimeState();
@@ -784,6 +808,7 @@ async function getRuntimeState() {
 
     if (runtimeState.activeWsUrl && ui.wsUrl) {
       ui.wsUrl.value = runtimeState.activeWsUrl;
+      saveWsUrl(ui.wsUrl.value);
     }
 
     if (typeof runtimeState.clientLogForwardingEnabled === "boolean") {
@@ -811,6 +836,7 @@ async function getRuntimeState() {
   });
 
   ui.helpActionBtn.addEventListener("click", () => {
+    saveWsUrl(ui.wsUrl.value);
     handleHelpAction().catch((error) => {
       prependLogLine(ui, `help action crash: ${error.message}`);
     });
@@ -818,10 +844,15 @@ async function getRuntimeState() {
 
   ui.connectBtn.addEventListener("click", () => {
     helpMessageOverride = "";
+    saveWsUrl(ui.wsUrl.value);
     runRuntimeCommand("connect", {
       wsUrl: ui.wsUrl.value,
       logRelayEnabled
     });
+  });
+
+  ui.wsUrl.addEventListener("change", () => {
+    saveWsUrl(ui.wsUrl.value);
   });
 
   ui.disconnectBtn.addEventListener("click", () => {
