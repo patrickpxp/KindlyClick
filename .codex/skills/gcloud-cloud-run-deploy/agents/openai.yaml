@@ -1,0 +1,4 @@
+interface:
+  display_name: "GCloud Cloud Run Deploy"
+  short_description: "Deploy and debug GCP backend rollouts"
+  default_prompt: "Use $gcloud-cloud-run-deploy to deploy or debug a Cloud Run backend with gcloud, Cloud Build, and Artifact Registry."
